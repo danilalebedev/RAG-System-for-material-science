@@ -36,6 +36,7 @@ class LiteratureSearchRequest(BaseModel):
     materials_only: bool = True
     use_query_rewrite: bool = True
     use_llm_query_rewrite: bool = True
+    generate_comparison_insights: bool = True
     include_recommended_resource_links: bool = True
     recommended_resource_ids: list[str] = Field(default_factory=list)
     fetch_excerpts: bool = True
@@ -111,4 +112,12 @@ class LiteratureSearchRun(BaseModel):
     output_dir: Path | None = None
     report_markdown: str | None = None
     report_pdf_path: Path | None = None
+    report_docx_path: Path | None = None
+    links_report_markdown: str | None = None
+    links_report_pdf_path: Path | None = None
+    links_report_docx_path: Path | None = None
+    deep_report_markdown: str | None = None
+    deep_report_pdf_path: Path | None = None
+    deep_report_docx_path: Path | None = None
+    full_run_json_path: Path | None = None
     warnings: list[str] = Field(default_factory=list)

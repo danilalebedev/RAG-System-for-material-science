@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+from docx import Document
+from docx.shared import Pt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -19,6 +22,14 @@ def compact_text(value: Any, max_chars: int | None = None) -> str:
     if max_chars is not None and len(text) > max_chars:
         return text[: max_chars - 3].rstrip() + "..."
     return text
+
+
+def result_link(result: Any) -> str:
+    if getattr(result, "url", None):
+        return str(result.url)
+    if getattr(result, "doi", None):
+        return f"https://doi.org/{result.doi}"
+    return ""
 
 
 def register_pdf_font() -> str:
@@ -37,7 +48,7 @@ def register_pdf_font() -> str:
 
 
 def paragraph(text: Any, style: ParagraphStyle) -> Paragraph:
-    escaped = escape(compact_text(text, 3000)).replace("\n", "<br/>")
+    escaped = escape(compact_text(text, 4000)).replace("\n", "<br/>")
     return Paragraph(escaped or " ", style)
 
 
@@ -70,9 +81,27 @@ def unique_limited(values: list[str], limit: int = 8) -> list[str]:
     return result
 
 
+def year_counts(run: Any) -> list[dict[str, Any]]:
+    counts: dict[int, int] = {}
+    for result in run.results:
+        if result.year:
+            counts[int(result.year)] = counts.get(int(result.year), 0) + 1
+    return [{"year": year, "count": counts[year]} for year in sorted(counts)]
+
+
+def source_counts(run: Any) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for result in run.results:
+        counts[result.source] = counts.get(result.source, 0) + 1
+    return [{"source": source, "count": count} for source, count in sorted(counts.items())]
+
+
 def run_overall_summary(run: Any) -> str:
     if not run.deep_results:
-        return "Выполнен metadata-only поиск: сформирован ранжированный список публикаций. Включите Deep Search, чтобы получить summary статей и сравнение методик."
+        return (
+            "Выполнен metadata-only поиск: сформирован ранжированный список публикаций. "
+            "Запустите Deep Search, чтобы получить summary статей и сравнение методик."
+        )
     summaries = [item.document_summary for item in run.deep_results if item.document_summary]
     procedures = sum(len(item.procedure_summaries) for item in run.deep_results)
     confirmed = len(run.comparison.confirmed_methods) if run.comparison else 0
@@ -80,16 +109,14 @@ def run_overall_summary(run: Any) -> str:
     local_only = len(run.comparison.local_only_methods) if run.comparison else 0
 
     paper_summaries = unique_limited(
-        [compact_text(row.get("summary") or row.get("main_topic"), 260) for row in summaries if row],
+        [compact_text(row.get("summary") or row.get("main_topic"), 280) for row in summaries if row],
         limit=4,
     )
     materials = unique_limited([item for row in summaries for item in list_values(row.get("materials"))], limit=8)
     processes = unique_limited([item for row in summaries for item in list_values(row.get("processes") or row.get("methods"))], limit=8)
     findings = unique_limited([item for row in summaries for item in list_values(row.get("key_findings"))], limit=5)
 
-    parts = [
-        f"Deep Search обработал {len(summaries)} внешних источников и извлек {procedures} записей о методиках.",
-    ]
+    parts = [f"Deep Search обработал {len(summaries)} внешних источников и извлек {procedures} записей о методиках."]
     if paper_summaries:
         parts.append("Общий вывод по статьям: " + " ".join(paper_summaries))
     if materials:
@@ -104,40 +131,187 @@ def run_overall_summary(run: Any) -> str:
     return " ".join(parts)
 
 
-def build_pdf_report(run: Any, output_path: Path) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def comparison_insights(run: Any) -> str:
+    if not getattr(run.request, "generate_comparison_insights", True):
+        return ""
+    if not run.comparison:
+        return "Сравнение локального и внешнего поиска пока недоступно: нет comparison report."
+
+    years = year_counts(run)
+    sources = source_counts(run)
+    newest = max((row["year"] for row in years), default=None)
+    oldest = min((row["year"] for row in years), default=None)
+    top_source = max(sources, key=lambda row: row["count"], default=None)
+    confirmed = len(run.comparison.confirmed_methods)
+    local_only = len(run.comparison.local_only_methods)
+    web_only = len(run.comparison.web_only_methods)
+    differing = len(run.comparison.differing_conditions)
+
+    parts = []
+    if oldest and newest:
+        parts.append(f"Внешняя выдача покрывает публикации за период {oldest}-{newest}.")
+    if top_source:
+        parts.append(f"Больше всего публикаций пришло из базы {top_source['source']} ({top_source['count']}).")
+    parts.append(
+        f"По методикам: подтверждено пересечений {confirmed}, локально уникальных записей {local_only}, внешне уникальных записей {web_only}."
+    )
+    if differing:
+        parts.append(f"Найдено {differing} случаев, где методики похожи, но условия/диапазоны отличаются.")
+    if web_only > local_only:
+        parts.append("Внешняя литература расширяет локальную базу: стоит использовать web findings как кандидатов на пополнение графа.")
+    elif local_only > web_only:
+        parts.append("Локальная база содержит больше уникальных методик по запросу; внешние источники полезны в основном для подтверждения.")
+    else:
+        parts.append("Локальная и внешняя выдача дают сопоставимый объем уникальных методик.")
+    return " ".join(parts)
+
+
+def build_links_report(run: Any) -> str:
+    lines = [
+        "# Отчет по релевантным ссылкам",
+        "",
+        f"Запрос: {run.request.query}",
+        f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}",
+        "",
+        "## Web-search",
+    ]
+    if run.results:
+        for index, result in enumerate(run.results, start=1):
+            lines.append(f"{index}. [{result.title}]({result_link(result)})")
+    else:
+        lines.append("Внешние публикации не найдены.")
+    lines.extend(["", "## Локальный поиск"])
+    if run.local_matches:
+        for index, row in enumerate(run.local_matches[:30], start=1):
+            title = compact_text(row.get("title") or row.get("doc_id") or row.get("source_path"), 240)
+            lines.append(f"{index}. {title}")
+    else:
+        lines.append("Локальные совпадения не найдены.")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_deep_report(run: Any) -> str:
+    lines = [
+        "# Deep Search отчет",
+        "",
+        f"Запрос: {run.request.query}",
+        "",
+        "## Общий вывод",
+        "",
+        run_overall_summary(run),
+        "",
+        "## Summary по статьям",
+    ]
+    if not run.deep_results:
+        lines.append("Deep Search не запускался.")
+    for index, item in enumerate(run.deep_results, start=1):
+        summary = item.document_summary or {}
+        link = result_link(item.source_result)
+        lines.extend(
+            [
+                "",
+                f"### {index}. {item.source_result.title}",
+                f"Ссылка: {link or 'n/a'}",
+                compact_text(summary.get("summary") or summary.get("main_topic") or "Summary не извлечен.", 1500),
+            ]
+        )
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_literature_report(run: Any) -> str:
+    lines = [
+        "# Полный отчет по поиску литературы",
+        "",
+        f"Запрос: {run.request.query}",
+        f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}",
+        f"Ключевые слова: {', '.join(run.keywords) if run.keywords else 'n/a'}",
+        f"Внешние результаты: {len(run.results)}",
+        f"Локальные совпадения: {len(run.local_matches)}",
+        f"Deep Search summaries: {len(run.deep_results)}",
+        "",
+        "## Общий вывод",
+        "",
+        run_overall_summary(run),
+    ]
+    insights = comparison_insights(run)
+    if insights:
+        lines.extend(["", "## Выводы по сравнению локального и web-поиска", "", insights])
+
+    lines.extend(["", "## Локальный поиск"])
+    if run.local_matches:
+        for index, row in enumerate(run.local_matches[:30], start=1):
+            title = compact_text(row.get("title") or row.get("doc_id") or row.get("source_path"), 240)
+            lines.append(f"{index}. {title}")
+    else:
+        lines.append("Локальные совпадения не найдены.")
+
+    lines.extend(["", "## Web-search"])
+    if run.results:
+        for index, result in enumerate(run.results, start=1):
+            lines.append(f"{index}. [{result.title}]({result_link(result)})")
+    else:
+        lines.append("Внешние публикации не найдены.")
+
+    lines.extend(["", "## Графики и распределения", "", "### По годам"])
+    for row in year_counts(run):
+        lines.append(f"- {row['year']}: {row['count']}")
+    lines.extend(["", "### По базам данных"])
+    for row in source_counts(run):
+        lines.append(f"- {row['source']}: {row['count']}")
+
+    if run.deep_results:
+        lines.extend(["", build_deep_report(run).strip()])
+    if run.warnings:
+        lines.extend(["", "## Warnings"])
+        lines.extend(f"- {warning}" for warning in run.warnings)
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_full_run_payload(run: Any) -> dict[str, Any]:
+    return {
+        "request": run.request.model_dump(mode="json"),
+        "query_plan": run.query_plan,
+        "keywords": run.keywords,
+        "web_results": [row.model_dump(mode="json") for row in run.results],
+        "local_matches": run.local_matches,
+        "deep_results": [row.model_dump(mode="json") for row in run.deep_results],
+        "comparison": run.comparison.model_dump(mode="json") if run.comparison else None,
+        "charts": {
+            "publication_years": year_counts(run),
+            "sources": source_counts(run),
+            "local_vs_web": [
+                {"bucket": "local", "count": len(run.local_matches)},
+                {"bucket": "web", "count": len(run.results)},
+            ],
+        },
+        "comparison_insights": comparison_insights(run),
+        "warnings": run.warnings,
+    }
+
+
+def pdf_styles() -> tuple[str, dict[str, ParagraphStyle]]:
     font_name = register_pdf_font()
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="BodyUnicode", parent=styles["BodyText"], fontName=font_name, fontSize=9, leading=12))
     styles.add(ParagraphStyle(name="TitleUnicode", parent=styles["Title"], fontName=font_name, fontSize=16, leading=20))
     styles.add(ParagraphStyle(name="HeadingUnicode", parent=styles["Heading2"], fontName=font_name, fontSize=12, leading=15))
     styles.add(ParagraphStyle(name="SmallUnicode", parent=styles["BodyText"], fontName=font_name, fontSize=8, leading=10))
+    return font_name, styles
 
-    story: list[Any] = []
-    story.append(paragraph("Literature Search Report", styles["TitleUnicode"]))
-    story.append(paragraph(f"Query: {run.request.query}", styles["BodyUnicode"]))
-    if run.query_plan:
-        story.append(paragraph(f"Corrected query: {run.query_plan.get('corrected_query')}", styles["BodyUnicode"]))
-        story.append(paragraph("Search variants: " + "; ".join(run.query_plan.get("search_queries") or []), styles["SmallUnicode"]))
-    story.append(paragraph("Overall Summary", styles["HeadingUnicode"]))
-    story.append(paragraph(run_overall_summary(run), styles["BodyUnicode"]))
-    story.append(Spacer(1, 0.3 * cm))
 
-    story.append(paragraph("Relevant Sources", styles["HeadingUnicode"]))
-    table_rows = [["#", "Title", "Year", "Q", "Source", "Link"]]
-    for index, result in enumerate(run.results[:20], start=1):
-        quartile = result.raw.get("journal_quartile", "") if result.raw else ""
+def add_sources_table(story: list[Any], run: Any, styles: dict[str, ParagraphStyle]) -> None:
+    story.append(paragraph("Релевантные источники", styles["HeadingUnicode"]))
+    table_rows = [["#", "Title", "Link"]]
+    for index, result in enumerate(run.results[:30], start=1):
+        link = result_link(result)
         table_rows.append(
             [
                 str(index),
                 paragraph(result.title, styles["SmallUnicode"]),
-                str(result.year or ""),
-                str(quartile or ""),
-                result.source,
-                link_paragraph(result.doi or str(result.url or ""), str(result.url) if result.url else None, styles["SmallUnicode"]),
+                link_paragraph("Открыть", link, styles["SmallUnicode"]) if link else "",
             ]
         )
-    table = Table(table_rows, colWidths=[0.8 * cm, 7.4 * cm, 1.3 * cm, 0.8 * cm, 2.4 * cm, 5 * cm], repeatRows=1)
+    table = Table(table_rows, colWidths=[0.8 * cm, 12.2 * cm, 3.5 * cm], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
@@ -149,53 +323,143 @@ def build_pdf_report(run: Any, output_path: Path) -> Path:
     )
     story.append(table)
 
-    if getattr(run, "resource_links", None):
-        story.append(Spacer(1, 0.4 * cm))
-        story.append(paragraph("Recommended Resource Search Links", styles["HeadingUnicode"]))
-        link_rows = [["Resource", "Category", "Query", "Link"]]
-        for row in run.resource_links[:30]:
-            link_rows.append(
-                [
-                    paragraph(str(row.get("name") or ""), styles["SmallUnicode"]),
-                    paragraph(str(row.get("category") or ""), styles["SmallUnicode"]),
-                    paragraph(str(row.get("query") or row.get("note") or ""), styles["SmallUnicode"]),
-                    link_paragraph(str(row.get("url") or ""), str(row.get("url") or ""), styles["SmallUnicode"]),
-                ]
-            )
-        links_table = Table(link_rows, colWidths=[3.2 * cm, 2.5 * cm, 6.5 * cm, 5 * cm], repeatRows=1)
-        links_table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c8cdd6")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ]
-            )
-        )
-        story.append(links_table)
 
-    if run.deep_results:
+def add_count_table(story: list[Any], title: str, headers: list[str], rows: list[dict[str, Any]], styles: dict[str, ParagraphStyle]) -> None:
+    if not rows:
+        return
+    story.append(Spacer(1, 0.25 * cm))
+    story.append(paragraph(title, styles["HeadingUnicode"]))
+    table_rows = [headers] + [[str(value) for value in row.values()] for row in rows]
+    table = Table(table_rows, colWidths=[8 * cm, 3 * cm], repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c8cdd6")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    story.append(table)
+
+
+def build_pdf_report(run: Any, output_path: Path, *, mode: str = "full") -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _, styles = pdf_styles()
+    story: list[Any] = []
+    title = {
+        "full": "Полный отчет по поиску литературы",
+        "links": "Отчет по релевантным ссылкам",
+        "deep": "Deep Search отчет",
+    }.get(mode, "Отчет по поиску литературы")
+    story.append(paragraph(title, styles["TitleUnicode"]))
+    story.append(paragraph(f"Запрос: {run.request.query}", styles["BodyUnicode"]))
+    story.append(paragraph(f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}", styles["BodyUnicode"]))
+
+    if mode in {"full", "deep"}:
+        story.append(paragraph("Общий вывод", styles["HeadingUnicode"]))
+        story.append(paragraph(run_overall_summary(run), styles["BodyUnicode"]))
+        insights = comparison_insights(run)
+        if mode == "full" and insights:
+            story.append(paragraph("Выводы по сравнению", styles["HeadingUnicode"]))
+            story.append(paragraph(insights, styles["BodyUnicode"]))
+
+    if mode in {"full", "links"}:
+        add_sources_table(story, run, styles)
+    if mode == "full":
+        add_count_table(story, "Публикации по годам", ["Year", "Count"], year_counts(run), styles)
+        add_count_table(story, "Публикации по базам данных", ["Source", "Count"], source_counts(run), styles)
+    if mode in {"full", "deep"} and run.deep_results:
         story.append(Spacer(1, 0.4 * cm))
-        story.append(paragraph("Deep Search Summaries", styles["HeadingUnicode"]))
+        story.append(paragraph("Deep Search summaries", styles["HeadingUnicode"]))
         for item in run.deep_results:
             summary = item.document_summary or {}
-            story.append(link_paragraph(item.source_result.title, str(item.source_result.url) if item.source_result.url else None, styles["BodyUnicode"]))
-            story.append(paragraph(summary.get("summary") or summary.get("main_topic") or "No summary extracted.", styles["SmallUnicode"]))
-            if item.procedure_summaries:
-                methods = []
-                for proc in item.procedure_summaries[:5]:
-                    methods.append(compact_text(proc.get("synthesis_or_process_method") or proc.get("synthesis_method") or proc.get("key_points"), 240))
-                story.append(paragraph("Methods: " + "; ".join(method for method in methods if method), styles["SmallUnicode"]))
-
-    if run.comparison:
-        story.append(Spacer(1, 0.4 * cm))
-        story.append(paragraph("Comparison Summary", styles["HeadingUnicode"]))
-        story.append(paragraph(f"Confirmed methods: {len(run.comparison.confirmed_methods)}", styles["BodyUnicode"]))
-        story.append(paragraph(f"Local-only methods: {len(run.comparison.local_only_methods)}", styles["BodyUnicode"]))
-        story.append(paragraph(f"Web-only methods: {len(run.comparison.web_only_methods)}", styles["BodyUnicode"]))
-        for gap in run.comparison.gaps[:10]:
-            story.append(paragraph("- " + gap, styles["SmallUnicode"]))
+            story.append(link_paragraph(item.source_result.title, result_link(item.source_result), styles["BodyUnicode"]))
+            story.append(paragraph(summary.get("summary") or summary.get("main_topic") or "Summary не извлечен.", styles["SmallUnicode"]))
 
     doc = SimpleDocTemplate(str(output_path), pagesize=A4, rightMargin=1.2 * cm, leftMargin=1.2 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm)
     doc.build(story)
     return output_path
+
+
+def set_docx_style(document: Document) -> None:
+    style = document.styles["Normal"]
+    style.font.name = "Arial"
+    style.font.size = Pt(10)
+
+
+def add_docx_table(document: Document, headers: list[str], rows: list[list[str]]) -> None:
+    table = document.add_table(rows=1, cols=len(headers))
+    table.style = "Table Grid"
+    for index, header in enumerate(headers):
+        table.rows[0].cells[index].text = header
+    for row in rows:
+        cells = table.add_row().cells
+        for index, value in enumerate(row):
+            cells[index].text = compact_text(value, 1200)
+
+
+def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    set_docx_style(document)
+    document.add_heading(
+        {
+            "full": "Полный отчет по поиску литературы",
+            "links": "Отчет по релевантным ссылкам",
+            "deep": "Deep Search отчет",
+        }.get(mode, "Отчет по поиску литературы"),
+        level=1,
+    )
+    document.add_paragraph(f"Запрос: {run.request.query}")
+    document.add_paragraph(f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}")
+
+    if mode in {"full", "deep"}:
+        document.add_heading("Общий вывод", level=2)
+        document.add_paragraph(run_overall_summary(run))
+        insights = comparison_insights(run)
+        if mode == "full" and insights:
+            document.add_heading("Выводы по сравнению локального и web-поиска", level=2)
+            document.add_paragraph(insights)
+
+    if mode in {"full", "links"}:
+        document.add_heading("Web-search", level=2)
+        add_docx_table(
+            document,
+            ["#", "Заголовок", "Ссылка"],
+            [[str(index), result.title, result_link(result)] for index, result in enumerate(run.results, start=1)],
+        )
+    if mode == "full":
+        document.add_heading("Локальный поиск", level=2)
+        local_rows = [
+            [str(index), compact_text(row.get("title") or row.get("doc_id") or row.get("source_path"), 600)]
+            for index, row in enumerate(run.local_matches[:50], start=1)
+        ]
+        add_docx_table(document, ["#", "Источник"], local_rows)
+        document.add_heading("Публикации по годам", level=2)
+        add_docx_table(document, ["Year", "Count"], [[str(row["year"]), str(row["count"])] for row in year_counts(run)])
+        document.add_heading("Публикации по базам данных", level=2)
+        add_docx_table(document, ["Source", "Count"], [[str(row["source"]), str(row["count"])] for row in source_counts(run)])
+
+    if mode in {"full", "deep"} and run.deep_results:
+        document.add_heading("Deep Search summaries", level=2)
+        for index, item in enumerate(run.deep_results, start=1):
+            summary = item.document_summary or {}
+            document.add_heading(f"{index}. {item.source_result.title}", level=3)
+            document.add_paragraph(f"Ссылка: {result_link(item.source_result) or 'n/a'}")
+            document.add_paragraph(compact_text(summary.get("summary") or summary.get("main_topic") or "Summary не извлечен.", 2000))
+
+    document.save(output_path)
+    return output_path
+
+
+def write_text_report(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def write_json_report(path: Path, payload: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return path
