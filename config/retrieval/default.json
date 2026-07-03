@@ -1,0 +1,35 @@
+{
+  "chunks_path": "data/parsed/chunks.jsonl",
+  "chunk_index_dir": "data/indexes/chunks",
+  "lexical_index_dir": "data/indexes/lexical",
+  "embedding": {
+    "backend": "yandex",
+    "default_model": "fallback",
+    "endpoint": "https://ai.api.cloud.yandex.net/foundationModels/v1/textEmbedding",
+    "auth_scheme": "Api-Key",
+    "doc_model_uri_template": "emb://{folder_id}/text-embeddings-v2-doc/",
+    "query_model_uri_template": "emb://{folder_id}/text-embeddings-v2-query/",
+    "fallback_doc_model_uri_template": "emb://{folder_id}/text-search-doc/latest",
+    "fallback_query_model_uri_template": "emb://{folder_id}/text-search-query/latest",
+    "max_input_chars": 2800,
+    "request_timeout_seconds": 60,
+    "max_retries": 8,
+    "retry_backoff_seconds": 2.0,
+    "rate_limit_sleep_seconds": 30.0
+  },
+  "local_hash": {
+    "dimension": 384
+  },
+  "build": {
+    "batch_size": 50,
+    "sleep_seconds": 0.0
+  },
+  "search": {
+    "top_k": 10,
+    "dense_top_k": 50,
+    "lexical_top_k": 50,
+    "rrf_k": 60,
+    "snippet_chars": 700,
+    "vector_batch_size": 8192
+  }
+}
