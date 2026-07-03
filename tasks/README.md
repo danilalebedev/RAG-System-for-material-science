@@ -1,22 +1,39 @@
 # Tasks Workspace
 
-Эта папка - рабочая точка входа для команды. Здесь фиксируем короткие
-исполняемые ТЗ по отдельным направлениям, чтобы не искать контекст по всему
-репозиторию.
+Эта папка - рабочая точка входа для команды. Каждый крупный шаг разработки
+лежит в отдельной подпапке: внутри хранится короткое ТЗ, что уже сделано,
+какие файлы можно менять и как дальше работать с результатом.
 
 Главный архитектурный план проекта: [`../DEVELOPMENT_PLAN.md`](../DEVELOPMENT_PLAN.md).
 
-## Активные задачи
+## Структура
 
-- [`rag_build.md`](rag_build.md) - сборка RAG: embeddings, vector index,
-  lexical baseline, retrieval CLI, контракты входов/выходов.
+- [`00_project_context/`](00_project_context/) - общий контекст проекта, ссылки,
+  роли workstreams и правила синхронизации.
+- [`01_parsing/`](01_parsing/) - статус парсинга корпуса, layout артефактов и
+  процедура догрузки новых файлов.
+- [`02_summary_graph/`](02_summary_graph/) - активная зона: RECIPER-style
+  summaries, extraction фактов и построение typed graph.
+- [`03_rag/`](03_rag/) - зона RAG-разработчика: embeddings, vector index,
+  lexical baseline, retrieval API.
+- [`04_query_gui_eval/`](04_query_gui_eval/) - будущая интеграция query layer,
+  GUI, evaluation и demo flows.
+
+## Текущий фокус
+
+Мы сейчас не трогаем RAG-реализацию. RAG находится в `tasks/03_rag/` и
+разрабатывается отдельно. Наша независимая задача - `tasks/02_summary_graph/`:
+из parsed chunks/tables/full texts собрать summaries, typed facts и граф с
+доказательствами.
 
 ## Правила
 
+- В `tasks/` не добавлять новые плоские md-файлы: каждый новый workstream
+  получает собственную подпапку.
 - `data/parsed/*` считается read-only входом.
 - Generated artifacts не коммитятся: `data/processed`, `data/indexes`,
   `reports`, `artifacts`.
 - Секреты не писать в md и не выводить в логи.
 - Для долгих API-задач обязателен resume/cache.
 - Если меняется контракт JSONL, обновить `DEVELOPMENT_PLAN.md` и релевантный
-  файл в `tasks/`.
+  файл в `tasks/<step>/README.md`.

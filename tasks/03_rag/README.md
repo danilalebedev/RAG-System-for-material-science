@@ -1,6 +1,11 @@
-# Task: RAG Index Build
+# 03. RAG Index Build
 
 Дата: 2026-07-03.
+
+Статус: отдельная зона RAG-разработчика. Текущая active workstream для нас -
+`../02_summary_graph/`; RAG-код сейчас не трогаем. Этот документ сохранен как
+handoff: в нем описаны входы, модель embeddings, индексы и acceptance criteria,
+чтобы второй разработчик мог двигаться независимо.
 
 Цель: построить первый воспроизводимый RAG-слой поверх уже распарсенного корпуса:
 dense embeddings по chunks, локальную векторную базу, lexical baseline и CLI
