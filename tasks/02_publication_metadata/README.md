@@ -549,6 +549,9 @@ Optional shared helpers после согласования:
 - report показывает coverage по source_type, missing fields и procedure counts.
 - quality report показывает `gate.mass_run_ready`; перед массовым прогоном он
   должен быть `true` или команда должна явно принять listed blockers.
+- `refused_triaged` в quality report означает, что LLM отказалась от документа,
+  но pipeline сохранил metadata-only baseline как `partial`; такие записи не
+  являются hard failure, но не считаются полноценными RECIPER summaries.
 
 ## Acceptance Criteria
 

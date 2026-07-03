@@ -61,7 +61,12 @@ build_and_write_quality_report(Path("data/processed/publications"))
 
 `report["unknown_keys"]` не означает ошибку автоматически. Это список полей, которых нет в документированной схеме. Поля с большим count нужно либо добавить в схему явно, либо удалить из extractor output.
 
-`report["records"]` нужен для оценки надежности прогона. `failed_llm_records`, `partial_records` и `refusal_like_records` показывают, можно ли масштабировать extraction без накопления ручного долга.
+`report["records"]` нужен для оценки надежности прогона. `failed_llm_records`, `partial_records`, `refusal_like_records` и `triaged_refusal_records` показывают, можно ли масштабировать extraction без накопления ручного долга.
+
+`refused_triaged` означает, что модель отказалась обрабатывать документ, но
+пайплайн сохранил metadata-only baseline и пометил запись как `partial`. Это
+не считается hard failure, но такие документы нужно учитывать в ручном triage и
+не использовать как полноценные RECIPER-style summaries.
 
 ## Gate criteria для массового прогона
 
@@ -77,6 +82,8 @@ build_and_write_quality_report(Path("data/processed/publications"))
 - `declared_unknown_ratio <= 0.20`.
 - `failed_llm_records == 0`;
 - `refusal_like_records == 0`.
+- `triaged_refusal_records` явно просмотрены на sample и приняты как
+  metadata-only fallback для safety-sensitive документов.
 
 Recommended gate:
 

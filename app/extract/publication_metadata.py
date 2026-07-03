@@ -871,6 +871,23 @@ def extract_json_object(text: str) -> dict[str, Any]:
         raise
 
 
+def is_refusal_response(text: Any) -> bool:
+    lower = compact_text(text, 2000).lower()
+    return any(
+        marker in lower
+        for marker in (
+            "не могу обсуждать",
+            "не могу помочь",
+            "не могу предоставить",
+            "давайте поговорим",
+            "i can't",
+            "i cannot",
+            "cannot comply",
+            "refuse",
+        )
+    )
+
+
 def merge_list_values(*values: Any) -> list[Any]:
     result: list[Any] = []
     seen: set[str] = set()
@@ -1323,6 +1340,7 @@ def process_documents(
         )
         bundle = baseline
         raw_response = None
+        raw_path: Path | None = None
         if not no_llm and client is not None and str(doc.get("status")) == "ok":
             try:
                 source_package = build_source_package(doc, baseline, max_chars=config.source_package_max_chars)
@@ -1355,15 +1373,27 @@ def process_documents(
                 llm_used += 1
                 time.sleep(config.sleep_seconds)
             except Exception as exc:  # noqa: BLE001 - per-document failure should not stop the corpus.
-                failed += 1
                 bundle["publication"]["extraction_status"] = "partial"
-                bundle["publication"].setdefault("review_notes", []).append(f"llm_error: {exc}")
-                bundle["llm"] = {
-                    "used": True,
-                    "status": "failed",
-                    "error": str(exc)[:1000],
-                    "raw_response_preview": compact_text(raw_response, 1000) if raw_response else None,
-                }
+                if is_refusal_response(raw_response):
+                    bundle["publication"].setdefault("review_notes", []).append(
+                        "llm_refusal_triaged: metadata-only baseline retained"
+                    )
+                    bundle["llm"] = {
+                        "used": True,
+                        "status": "refused_triaged",
+                        "error": str(exc)[:1000],
+                        "raw_response_path": str(raw_path) if raw_path else None,
+                        "fallback": "metadata_only_baseline",
+                    }
+                else:
+                    failed += 1
+                    bundle["publication"].setdefault("review_notes", []).append(f"llm_error: {exc}")
+                    bundle["llm"] = {
+                        "used": True,
+                        "status": "failed",
+                        "error": str(exc)[:1000],
+                        "raw_response_preview": compact_text(raw_response, 1000) if raw_response else None,
+                    }
         write_json(record_path, bundle)
         processed += 1
         if position % 10 == 0:
