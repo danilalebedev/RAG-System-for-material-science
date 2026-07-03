@@ -142,8 +142,8 @@ graph outputs и parsed sources.
   и краткий управленческий вывод;
 - вкладка `Сравнение` показывает Contradiction & Consensus Panel, method comparison matrix и heatmap
   `материал x методика` после Deep Search;
-- вкладка `Evidence` показывает evidence cards и кандидаты числовых диапазонов; вкладка `Графики` строит mini graph
-  `Material -> Process -> Equipment -> Output`;
+- вкладка `Evidence` показывает evidence cards и кандидаты числовых диапазонов; вкладка `Графики` строит mini knowledge map
+  `Expert -> Publication -> Experiment -> Material -> Process -> Equipment -> Output -> Conclusion`;
 - `full_run.json` теперь включает cockpit payload: query decomposition, dashboard metrics, method matrix, heatmap,
   consensus panel, evidence cards, numeric intervals, mini graph edges, gap radar и executive brief markdown;
 - executive brief структурирован как `5 ключевых выводов`, `3 риска`, `3 пробела`, `top-5 источников`

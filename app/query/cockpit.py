@@ -571,17 +571,44 @@ def numeric_interval_rows(run: Any) -> list[dict[str, Any]]:
 
 def mini_graph_edges(run: Any) -> list[dict[str, Any]]:
     edges: list[dict[str, Any]] = []
+    for result in (getattr(run, "results", []) or [])[:25]:
+        publication = "Publication: " + compact_text(getattr(result, "title", "") or getattr(result, "result_id", ""), 90)
+        for author in (getattr(result, "authors", []) or [])[:3]:
+            edges.append({"from": "Expert: " + compact_text(author, 70), "to": publication, "relation": "authored", "scope": "web"})
+        if getattr(result, "venue", None):
+            edges.append({"from": publication, "to": "Venue: " + compact_text(result.venue, 70), "relation": "published in", "scope": "web"})
+        if getattr(result, "year", None):
+            edges.append({"from": publication, "to": f"Year: {result.year}", "relation": "published", "scope": "web"})
+    for deep_result in (getattr(run, "deep_results", []) or [])[:25]:
+        publication = "Publication: " + compact_text(deep_result.source_result.title, 90)
+        summary = deep_result.document_summary or {}
+        for finding in list_values(summary.get("key_findings") or summary.get("main_conclusions"))[:3]:
+            edges.append({"from": publication, "to": "Conclusion: " + compact_text(finding, 90), "relation": "concludes", "scope": "web"})
+        if summary.get("summary") or summary.get("main_topic"):
+            edges.append(
+                {
+                    "from": publication,
+                    "to": "Conclusion: " + compact_text(summary.get("summary") or summary.get("main_topic"), 90),
+                    "relation": "summarizes",
+                    "scope": "web",
+                }
+            )
     for row in (getattr(getattr(run, "comparison", None), "rows", []) or [])[:60]:
         material = compact_text(row.get("material") or "Material", 80)
         method = compact_text(row.get("method") or ", ".join(list_values(row.get("processes"))[:2]) or "Process", 80)
         equipment = compact_text(", ".join(list_values(row.get("equipment"))[:2]) or "Equipment", 80)
         outputs = compact_text(", ".join(list_values(row.get("outputs") or row.get("observed_effects"))[:2]) or "Output", 80)
         scope = row.get("scope") or "unknown"
+        publication = "Publication: " + compact_text(row.get("title") or row.get("doc_id") or row.get("result_id") or "Source", 90)
+        experiment = "Experiment: " + compact_text(method if method != "Process" else material, 80)
         edges.extend(
             [
-                {"from": material, "to": method, "relation": "process", "scope": scope},
-                {"from": method, "to": equipment, "relation": "uses", "scope": scope},
-                {"from": equipment, "to": outputs, "relation": "produces", "scope": scope},
+                {"from": publication, "to": experiment, "relation": "describes", "scope": scope},
+                {"from": experiment, "to": "Material: " + material, "relation": "uses material", "scope": scope},
+                {"from": "Material: " + material, "to": "Process: " + method, "relation": "processed by", "scope": scope},
+                {"from": "Process: " + method, "to": "Equipment: " + equipment, "relation": "uses", "scope": scope},
+                {"from": "Equipment: " + equipment, "to": "Output: " + outputs, "relation": "produces", "scope": scope},
+                {"from": "Output: " + outputs, "to": "Conclusion: " + outputs, "relation": "supports", "scope": scope},
             ]
         )
     if not edges:

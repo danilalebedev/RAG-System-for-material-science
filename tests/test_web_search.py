@@ -487,6 +487,8 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
         doi="10.1000/nickel",
         url="https://example.org/paper",
         abstract="Annealing at 950 C changes hardness in nickel alloys.",
+        authors=["A. Expert"],
+        venue="Materials Journal",
     )
     comparison = MethodComparison(
         query="nickel alloy annealing 900 C",
@@ -548,7 +550,10 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     assert consensus_panel_rows(run)[0]["count"] == 1
     assert evidence_cards(run)[0]["kind"] == "web"
     assert numeric_interval_rows(run)
-    assert {"from": "nickel alloy", "to": "annealing", "relation": "process", "scope": "local"} in mini_graph_edges(run)
+    graph_edges = mini_graph_edges(run)
+    assert {"from": "Expert: A. Expert", "to": "Publication: Nickel alloy annealing hardness", "relation": "authored", "scope": "web"} in graph_edges
+    assert {"from": "Publication: Local nickel work", "to": "Experiment: annealing", "relation": "describes", "scope": "local"} in graph_edges
+    assert {"from": "Material: nickel alloy", "to": "Process: annealing", "relation": "processed by", "scope": "local"} in graph_edges
     assert any(row["signal"] == "Разные условия/диапазоны" and row["value"] == 1 for row in gap_radar_rows(run))
     brief = executive_brief_markdown(run)
     assert "Краткий управленческий вывод" in brief

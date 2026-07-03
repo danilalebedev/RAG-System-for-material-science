@@ -389,7 +389,7 @@ def render_run(run: Any) -> None:
                 ]
             ).set_index("bucket")
             st.bar_chart(coverage)
-        st.write("Mini graph: Material -> Process -> Equipment -> Output")
+        st.write("Mini knowledge map: Expert -> Publication -> Experiment -> Material -> Process -> Equipment -> Output -> Conclusion")
         edges = mini_graph_edges(run)
         if edges:
             try:
