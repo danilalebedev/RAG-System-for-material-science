@@ -12,9 +12,12 @@
   роли workstreams и правила синхронизации.
 - [`01_parsing/`](01_parsing/) - статус парсинга корпуса, layout артефактов и
   процедура догрузки новых файлов.
-- [`02_publication_metadata/`](02_publication_metadata/) - библиографическая
-  metadata и document-level RECIPER-style summaries: авторы, год,
-  журнал/конференция, DOI, тип документа, procedure cards, evidence.
+- [`02_publication_metadata/`](02_publication_metadata/) - завершенный upstream
+  слой: библиографическая metadata, document summaries, RECIPER-style procedure
+  cards и evidence. Контракт данных:
+  [`02_publication_metadata/data_contract.md`](02_publication_metadata/data_contract.md);
+  отчет о прогоне:
+  [`02_publication_metadata/extraction_run_report.md`](02_publication_metadata/extraction_run_report.md).
 - [`02_summary_graph/`](02_summary_graph/) - активная зона: RECIPER-style
   summaries, extraction фактов и построение typed graph.
 - [`03_rag/`](03_rag/) - зона RAG-разработчика: embeddings, vector index,

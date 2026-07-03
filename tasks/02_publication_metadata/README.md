@@ -1,13 +1,43 @@
 # 02. Publication Metadata + RECIPER-Style Summaries
 
-Дата обновления: 2026-07-03.
+Дата обновления: 2026-07-04.
 
-Статус: активная upstream-задача для графа. Цель - одним воспроизводимым
-пайплайном собрать нормализованную библиографическую metadata, краткое summary
-каждого источника и RECIPER-style procedure summaries. Graph builder потом
-читает эти outputs и строит `Publication` nodes, `described_in` edges и первые
-кандидаты `Material`/`Process`/`Experiment`/`Property` без повторного чтения
-всего full text.
+Статус: extraction corpus run завершен. Цель этого workstream - одним
+воспроизводимым пайплайном собрать нормализованную библиографическую metadata,
+краткое summary каждого источника и RECIPER-style procedure summaries. Graph
+builder потом читает эти outputs и строит `Publication` nodes,
+`described_in` edges и первые кандидаты
+`Material`/`Process`/`Experiment`/`Property` без повторного чтения всего full
+text.
+
+## Current Handoff
+
+- Контракт данных и join keys:
+  [`data_contract.md`](data_contract.md).
+- Отчет о полном прогоне, rebuild первых 250 и QA:
+  [`extraction_run_report.md`](extraction_run_report.md).
+- QA-субагент и интерпретация gate:
+  [`quality_agent.md`](quality_agent.md).
+- Sampled summary audit:
+  [`summary_quality_audit.md`](summary_quality_audit.md).
+
+Итог после rebuild первых 250 документов:
+
+| Artifact | Count |
+|---|---:|
+| `publications.jsonl` | 1862 |
+| `document_summaries.jsonl` | 1862 |
+| `procedure_summaries.jsonl` | 879 |
+| `publication_evidence_spans.jsonl` | 21328 |
+| bad JSON lines in key JSONL | 0 |
+| procedures without evidence | 0 |
+
+Quality gates:
+
+- `publication_quality_report.gate.mass_run_ready = true`;
+- `publication_quality_report.gate.blocking_error_count = 0`;
+- `summary_quality_report.gate.summary_audit_ready = true`;
+- `summary_quality_report.gate.blocking_error_count = 0`.
 
 ## Why This Step Exists
 
