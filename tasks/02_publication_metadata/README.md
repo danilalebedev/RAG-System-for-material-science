@@ -1,13 +1,15 @@
-# 02. Publication Metadata
+# 02. Publication Metadata + RECIPER-Style Summaries
 
 Дата обновления: 2026-07-03.
 
-Статус: новая отдельная upstream-задача. Цель - извлечь нормализованную
-библиографическую metadata по источникам корпуса, чтобы graph builder мог
-создавать `Publication` nodes и связывать эксперименты/процессы/материалы с
-источником через `described_in`.
+Статус: активная upstream-задача для графа. Цель - одним воспроизводимым
+пайплайном собрать нормализованную библиографическую metadata, краткое summary
+каждого источника и RECIPER-style procedure summaries. Graph builder потом
+читает эти outputs и строит `Publication` nodes, `described_in` edges и первые
+кандидаты `Material`/`Process`/`Experiment`/`Property` без повторного чтения
+всего full text.
 
-## Почему Это Отдельный Шаг
+## Why This Step Exists
 
 Текущий `data/parsed/documents.jsonl` хранит техническую metadata парсинга и
 встроенную metadata файлов. Это полезно как baseline, но не равно
@@ -16,7 +18,7 @@
 - top-level `author/authors/journal/year/doi/abstract` сейчас не заполнены;
 - `metadata_json.author` часто означает автора файла или презентации, а не
   автора научной работы;
-- `metadata_json.title` часто технический: например, `Презентация PowerPoint`;
+- `metadata_json.title` часто технический, например `Презентация PowerPoint`;
 - год создания файла не всегда равен году публикации.
 
 По фактическому корпусу:
@@ -45,16 +47,74 @@
 Вывод: типизация должна покрывать не только journal articles, но и conference
 materials, обзоры, доклады, технические документы и табличные датасеты.
 
+## RECIPER Format
+
+RECIPER: A Dual-View Retrieval Pipeline for Procedure-Oriented Materials
+Question Answering.
+
+- Paper: https://arxiv.org/abs/2604.11229v1
+- Code/data: https://github.com/ReaganWu/RECIPER
+- Локальный PDF: `Литература/Material Science/2604.11229v1.pdf`
+
+RECIPER строит две проекции документа:
+
+- paragraph-view: обычные paragraph chunks;
+- recipe/procedure-view: компактные LLM-extracted procedural summaries.
+
+В их `rag_database.json` paper record содержит:
+
+- `paper_id`
+- `title`
+- `abstract`
+- `metadata`
+- `sections[].paragraphs_with_entities[]`
+- `recipes[]`
+
+Типовой `recipes[]` record содержит:
+
+- `material_name`
+- `synthesis_method`
+- `steps[]`
+- `steps[].step_number`
+- `steps[].description`
+- `steps[].parameters`
+- `key_points`
+- `entities`
+
+В retrieval code recipe превращается в текст вида:
+
+```text
+Material: <material_name>
+Method: <synthesis_method>
+<step descriptions>
+Key points: <key_points>
+```
+
+Для нашего графа этого мало, поэтому мы сохраняем тот же смысловой формат, но
+добавляем provenance и typed hints: `doc_id`, `publication_id`,
+`source_span_ids`, `confidence`, `materials`, `processes`, `equipment`,
+`properties`, `outputs`, `conditions`, `observed_effects`.
+
 ## Inputs
 
 Read-only входы:
 
 - `data/parsed/documents.jsonl`
 - `data/parsed/full_texts/*.txt`
-- `data/parsed/chunks.jsonl` только если нужно найти title/author в первых
-  chunks;
-- `data/parsed/tables.jsonl` и `data/parsed/spreadsheets_csv/**/*.csv` только
-  для Excel/DOCX cases, где metadata находится в таблице.
+- `data/parsed/chunks.jsonl`
+- `data/parsed/tables.jsonl`
+- `data/parsed/spreadsheets_csv/**/*.csv`
+
+Основной source package для LLM на один документ:
+
+- parser/source metadata из `documents.jsonl`;
+- первые 8-12 KB full text для title/authors/header;
+- candidate method/experiment snippets из chunks;
+- compact table previews из `tables.jsonl`;
+- CSV rows только точечно, если table preview указывает на важный workbook.
+
+Нельзя слать весь документ целиком без отбора. Для 1862 документов нужен
+cache/resume и лимиты нагрузки.
 
 ## Outputs
 
@@ -64,6 +124,8 @@ Read-only входы:
 - `data/processed/publications/publication_authors.jsonl`
 - `data/processed/publications/publication_venues.jsonl`
 - `data/processed/publications/publication_evidence_spans.jsonl`
+- `data/processed/publications/document_summaries.jsonl`
+- `data/processed/publications/procedure_summaries.jsonl`
 - `data/processed/publications/publication_metadata_report.json`
 - `data/processed/publications/publication_metadata_manifest.json`
 
@@ -79,28 +141,29 @@ Read-only входы:
 
 Обязательные поля:
 
-- `publication_id`: стабильный id, например `pub_<doc_id>` или hash canonical
-  title/year/source.
-- `doc_id`: id из `documents.jsonl`.
-- `document_kind`: нормализованный тип документа.
-- `source_type`: исходная категория из Яндекс.Диска.
-- `title`: лучший извлеченный заголовок.
-- `title_confidence`: confidence для заголовка.
-- `source_path`, `file_name`, `extension`: provenance из parser metadata.
+- `publication_id`: стабильный id, например `pub_<doc_id>`.
+- `doc_id`
+- `document_kind`
+- `source_type`
+- `title`
+- `title_confidence`
+- `source_path`
+- `file_name`
+- `extension`
 - `extraction_status`: `ok`, `partial`, `no_bibliography`, `needs_review`,
   `failed`.
-- `confidence`: общий confidence записи.
-- `evidence`: список evidence spans.
+- `confidence`
+- `evidence`
 
 Рекомендуемые поля:
 
 - `subtitle`
 - `language`: `ru`, `en`, `mixed`, `unknown`.
-- `year`: нормализованный год публикации.
-- `date_published`: если удалось извлечь точную дату.
-- `authors`: массив author refs или inline author objects.
-- `organizations`: организации/лаборатории/аффилиации.
-- `venue_name`: журнал, сборник, конференция, мероприятие или серия.
+- `year`
+- `date_published`
+- `authors`
+- `organizations`
+- `venue_name`
 - `venue_type`: `journal`, `conference`, `review_series`, `internal_report`,
   `presentation`, `dataset`, `unknown`.
 - `publisher`
@@ -112,11 +175,11 @@ Read-only входы:
 - `url`
 - `keywords`
 - `abstract`
-- `topic_tags`: tags из источника или LLM/rule extraction.
-- `embedded_metadata`: исходные PDF/DOCX поля без нормализации.
-- `parser_metadata`: page count, text chars, parser, quality label.
-- `missing_fields`: список важных отсутствующих полей.
-- `review_notes`: почему запись требует ручной проверки.
+- `topic_tags`
+- `embedded_metadata`
+- `parser_metadata`
+- `missing_fields`
+- `review_notes`
 
 ### `DocumentKind`
 
@@ -136,12 +199,11 @@ Enum:
 
 Mapping baseline:
 
-- `source_type=Журналы` -> чаще `journal_article`, но проверять по title/header.
+- `source_type=Журналы` -> чаще `journal_article`, но проверять по header.
 - `source_type=Материалы конференций` -> `conference_paper` или
   `conference_abstract`; Excel в этой категории -> `spreadsheet_dataset`.
 - `source_type=Обзоры` -> `review_article` или `technical_report`.
-- `source_type=Статьи` -> `journal_article`/`technical_report`, зависит от
-  header.
+- `source_type=Статьи` -> `journal_article`/`technical_report`.
 - `source_type=Доклады` -> `presentation_report`.
 
 ### `AuthorRecord`
@@ -153,7 +215,7 @@ Mapping baseline:
 
 Поля:
 
-- `author_id`: стабильный hash normalized name + optional affiliation.
+- `author_id`
 - `publication_id`
 - `doc_id`
 - `raw_name`
@@ -169,35 +231,76 @@ Mapping baseline:
 - `confidence`
 - `evidence`
 
-### `VenueRecord`
+### `DocumentSummaryRecord`
 
-Venue не становится graph node в MVP. Это атрибут `Publication`, но отдельный
-JSONL нужен для нормализации названий журналов/конференций.
+Одна короткая summary-запись на документ. Это обзор "о чем работа", а не
+пошаговый recipe. Нужен для GUI, фильтров, triage и graph candidate selection.
 
 Поля:
 
-- `venue_id`
-- `raw_name`
-- `normalized_name`
-- `venue_type`
-- `issn`
-- `publisher`
-- `country`
-- `city`
-- `aliases`
+- `document_summary_id`
+- `publication_id`
+- `doc_id`
+- `summary`: 3-7 предложений, без выдуманных деталей.
+- `main_topic`
+- `materials`
+- `processes`
+- `properties`
+- `methods`
+- `facilities_or_geography`
+- `key_findings`
+- `limitations_or_gaps`
+- `document_kind`
 - `confidence`
 - `evidence`
 
+### `ProcedureSummaryRecord`
+
+Одна или несколько RECIPER-style записей на документ. Если в документе описано
+несколько независимых процедур/экспериментов, создаем несколько records. Если
+процедур нет, для документа может быть 0 procedure records.
+
+Поля:
+
+- `procedure_summary_id`
+- `publication_id`
+- `doc_id`
+- `source_span_ids`
+- `material_name`
+- `synthesis_or_process_method`
+- `procedure_type`: `synthesis`, `processing`, `experiment`,
+  `characterization`, `calculation`, `industrial_process`, `unknown`.
+- `steps[]`
+- `steps[].step_number`
+- `steps[].description`
+- `steps[].parameters`
+- `key_points`
+- `materials`
+- `processes`
+- `equipment`
+- `properties`
+- `outputs`
+- `conditions`
+- `observed_effects`
+- `graph_hints`
+- `confidence`
+- `extraction_status`
+- `evidence`
+
+`graph_hints` не является графом. Это подсказка для следующего этапа:
+какие `Material`, `Process`, `Equipment`, `Property`, `Experiment`,
+`Facility` вероятно нужно создать или связать.
+
 ### `EvidenceSpan`
 
-Любое извлеченное библиографическое поле должно иметь traceability:
+Любое извлеченное поле должно иметь traceability:
 
 - `source_span_id`
 - `doc_id`
 - `publication_id`
 - `field_name`
-- `source_kind`: `embedded_metadata`, `full_text_header`, `chunk`, `filename`,
-  `source_path`, `table`
+- `source_kind`: `embedded_metadata`, `full_text_header`, `chunk`,
+  `filename`, `source_path`, `table`, `csv`
 - `start_char`
 - `end_char`
 - `text`
@@ -217,7 +320,6 @@ JSONL нужен для нормализации названий журнало
   "title": "Название источника",
   "language": "ru",
   "year": 2025,
-  "date_published": null,
   "venue_name": null,
   "venue_type": "presentation",
   "authors": [
@@ -232,8 +334,6 @@ JSONL нужен для нормализации названий журнало
   ],
   "organizations": ["Институт Гипроникель"],
   "doi": null,
-  "keywords": [],
-  "abstract": null,
   "source_path": "/Источники информации/Доклады/...",
   "file_name": "Доклад_...",
   "extension": ".pdf",
@@ -245,46 +345,71 @@ JSONL нужен для нормализации названий журнало
   "confidence": 0.68,
   "extraction_status": "partial",
   "missing_fields": ["doi", "venue_name"],
-  "evidence": [
-    {
-      "source_span_id": "pubspan_...",
-      "field_name": "title",
-      "source_kind": "full_text_header",
-      "text": "..."
-    }
-  ]
+  "evidence": [{"source_span_id": "pubspan_...", "field_name": "title"}]
 }
 ```
 
-`publication_authors.jsonl`:
+`document_summaries.jsonl`:
 
 ```json
 {
-  "author_id": "author_...",
-  "publication_id": "pub_...",
-  "doc_id": "doc_...",
-  "raw_name": "Петров П. П.",
-  "normalized_name": "Петров Петр Петрович",
-  "affiliations": ["..."],
-  "role": "author",
-  "order": 2,
-  "confidence": 0.81,
+  "document_summary_id": "docsum_b94cdbb6a2e6b59b",
+  "publication_id": "pub_b94cdbb6a2e6b59b",
+  "doc_id": "b94cdbb6a2e6b59b",
+  "summary": "Кратко описывает цель, материал/процесс, метод и ключевой вывод документа.",
+  "main_topic": "переработка концентратов",
+  "materials": ["концентрат драгоценных металлов"],
+  "processes": ["переработка", "оптимизация технологической схемы"],
+  "properties": ["извлечение", "экономическая эффективность"],
+  "methods": ["технико-экономический расчет"],
+  "facilities_or_geography": [],
+  "key_findings": ["описан вариант реконфигурации производства"],
+  "limitations_or_gaps": ["точные режимы требуют проверки в исходных таблицах"],
+  "confidence": 0.72,
   "evidence": [{"source_span_id": "pubspan_..."}]
 }
 ```
 
-`publication_venues.jsonl`:
+`procedure_summaries.jsonl`:
 
 ```json
 {
-  "venue_id": "venue_...",
-  "raw_name": "Журнал ...",
-  "normalized_name": "Журнал ...",
-  "venue_type": "journal",
-  "publisher": null,
-  "country": "RU",
-  "aliases": [],
-  "confidence": 0.77,
+  "procedure_summary_id": "proc_b94cdbb6a2e6b59b_0001",
+  "publication_id": "pub_b94cdbb6a2e6b59b",
+  "doc_id": "b94cdbb6a2e6b59b",
+  "material_name": "концентрат драгоценных металлов",
+  "synthesis_or_process_method": "технологическая переработка / реконфигурация схемы",
+  "procedure_type": "industrial_process",
+  "steps": [
+    {
+      "step_number": 1,
+      "description": "Проанализировать текущую технологию производства концентратов.",
+      "parameters": {}
+    },
+    {
+      "step_number": 2,
+      "description": "Выбрать перспективную схему и подготовить исходные данные для расчета.",
+      "parameters": {}
+    }
+  ],
+  "key_points": "Summary сохраняет материал, процесс, условия, выход и эффект, но не заменяет исходный evidence.",
+  "materials": ["концентрат драгоценных металлов"],
+  "processes": ["переработка", "реконфигурация производства"],
+  "equipment": [],
+  "properties": ["извлечение", "эффективность"],
+  "outputs": ["товарные концентраты"],
+  "conditions": [],
+  "observed_effects": [],
+  "graph_hints": [
+    {
+      "relation_type": "uses_material",
+      "source_type": "Experiment",
+      "target_type": "Material",
+      "confidence": 0.68
+    }
+  ],
+  "confidence": 0.7,
+  "extraction_status": "partial",
   "evidence": [{"source_span_id": "pubspan_..."}]
 }
 ```
@@ -294,24 +419,30 @@ JSONL нужен для нормализации названий журнало
 1. Baseline из `documents.jsonl`: взять `source_type`, `source_path`,
    `file_name`, `extension`, `title`, `metadata_json`, parser stats.
 2. Header extraction: читать первые 8-12 KB `full_texts/<doc_id>*.txt`.
-   Для PDF это обычно первые страницы; для DOCX/DOC - начало документа.
-3. Filename/source path extraction: извлекать автора/тип из имен вроде
+3. Candidate snippet selection: выбрать method/experiment/process chunks по
+   ключевым словам, числам, единицам, таблицам и headings.
+4. Filename/source path extraction: извлечь автора/тип из имен вроде
    `Доклад_Фамилия И.О.pdf`, а также category folder.
-4. Regex/rules:
+5. Regex/rules:
    - DOI: `10.<prefix>/<suffix>`;
    - year: `19xx`/`20xx`, но не брать годы из методологии без контекста;
    - volume/issue/pages: `Т.`, `Vol.`, `No.`, `pp.`, `С.`;
    - authors: строки перед title/abstract или после title, инициалы/фамилии;
    - journal/conference markers: `Журнал`, `Proceedings`, `Материалы`,
      `Conference`, `Сборник`.
-5. LLM fallback: только head snippets, filename и embedded metadata, не весь
-   документ. Модель возвращает строгий JSON по schema.
-6. Merge and rank: для каждого поля хранить candidates и выбирать лучший по
+6. LLM extraction: отправить bounded source package и получить строгий JSON:
+   `PublicationRecord`, `DocumentSummaryRecord`, `ProcedureSummaryRecord[]`.
+7. Merge and rank: для каждого поля хранить candidates и выбирать лучший по
    confidence + source priority.
-7. Validation: год в разумном диапазоне, DOI format, authors не равны creator
-   файла, title не равен техническому `Презентация PowerPoint` без evidence.
-8. Report: coverage по source_type/document_kind, missing fields, examples для
-   ручной проверки.
+8. Validation:
+   - год в разумном диапазоне;
+   - DOI соответствует формату;
+   - authors не равны creator файла без evidence;
+   - title не равен техническому `Презентация PowerPoint` без evidence;
+   - procedure summary не содержит материал/режим, которого нет в evidence;
+   - `not specified` допустим, если параметр важен, но отсутствует в тексте.
+9. Report: coverage по source_type/document_kind, missing fields,
+   summary/procedure counts, examples для ручной проверки.
 
 ## Source Priority
 
@@ -339,6 +470,13 @@ JSONL нужен для нормализации названий журнало
 4. filename/source path;
 5. file creation date только как low-confidence fallback.
 
+Для `procedure_summaries`:
+
+1. explicit methods/experimental/process sections;
+2. table-linked procedure descriptions;
+3. abstract/conclusion only as low-confidence fallback;
+4. no procedure record if evidence is insufficient.
+
 ## Files We Can Change
 
 - `app/extract/*`
@@ -357,7 +495,7 @@ Optional shared helpers после согласования:
 - `scripts/build_indexes.py`
 - `scripts/search_cli.py`
 - `data/indexes/*`
-- `app/graph/*` кроме чтения готового `publications.jsonl` в graph-task.
+- `app/graph/*` кроме чтения готовых publication/summary outputs в graph-task.
 - `data/parsed/*` вручную.
 
 ## Smoke Command Draft
@@ -369,11 +507,14 @@ Optional shared helpers после согласования:
 Ожидаемые проверки:
 
 - создан `publications.jsonl`;
+- созданы `document_summaries.jsonl` и `procedure_summaries.jsonl`;
 - ровно одна publication record на входной `doc_id`;
+- одна document summary на входной `doc_id`;
+- `procedure_summaries.jsonl` допускает 0..N procedures на документ;
 - нет реальных API keys в логах;
 - technical titles вроде `Презентация PowerPoint` не считаются high-confidence
   title без evidence из текста;
-- report показывает coverage по source_type и missing fields.
+- report показывает coverage по source_type, missing fields и procedure counts.
 
 ## Acceptance Criteria
 
@@ -383,11 +524,16 @@ MVP готов, если:
   `extraction_status` для неполных случаев;
 - минимум `title`, `document_kind`, `source_type`, `source_path`, `file_name`,
   `confidence`, `evidence` есть у всех records;
+- `document_summaries.jsonl` содержит одну запись на каждый документ со
+  статусом `ok/partial/no_text`;
+- `procedure_summaries.jsonl` содержит только evidence-backed procedures и
+  может иметь 0 записей для обзорных/пустых/непроцедурных документов;
 - `year` заполнен там, где найден с evidence, и не подменяется blindly датой
   создания файла;
 - `authors` извлечены с confidence/evidence, но не превращаются автоматически в
   `Expert` nodes;
 - `publication_metadata_report.json` содержит coverage и 20-50 examples для
   ручной проверки;
-- graph builder может создать `Publication` nodes из `publications.jsonl`
+- graph builder может создать `Publication` nodes из `publications.jsonl` и
+  первичные process/material/property candidates из `procedure_summaries.jsonl`
   без повторного чтения full text.

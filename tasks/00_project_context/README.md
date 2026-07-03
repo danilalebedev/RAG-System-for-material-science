@@ -33,8 +33,9 @@
 На текущий этап зоны разделены так, чтобы не было конфликтов в одних и тех же
 файлах:
 
-- Publication metadata: отдельная upstream-задача для `Publication` nodes,
-  авторов, года, журнала/конференции и provenance. Документация:
+- Publication metadata + summaries: отдельная upstream-задача для
+  `Publication` nodes, авторов, года, журнала/конференции, RECIPER-style
+  procedure cards и provenance. Документация:
   [`../02_publication_metadata/`](../02_publication_metadata/).
 - Summary + graph: активная зона текущей работы. Документация:
   [`../02_summary_graph/`](../02_summary_graph/).
@@ -51,6 +52,8 @@
   graph nodes/edges и future retrieval hits.
 - `publication_id` связывает bibliographic metadata с `Publication` node и
   downstream `described_in` edges.
+- `procedure_summary_id` связывает document-level recipe/procedure summary с
+  downstream `Experiment`, `Process`, `Material`, `Property` extraction.
 - `chunk_id` связывает конкретный фрагмент текста с extraction evidence.
 - `source_span_id` должен появиться в extraction layer, чтобы любой факт или
   ребро можно было открыть в исходном тексте.

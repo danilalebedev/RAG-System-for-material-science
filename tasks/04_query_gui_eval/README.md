@@ -19,7 +19,6 @@
 
 От `02_summary_graph`:
 
-- `data/processed/extraction/procedure_summaries.jsonl`
 - `data/processed/extraction/numeric_conditions.jsonl`
 - `data/processed/graph/nodes.jsonl`
 - `data/processed/graph/edges.jsonl`
@@ -29,6 +28,8 @@
 
 - `data/processed/publications/publications.jsonl`
 - `data/processed/publications/publication_authors.jsonl`
+- `data/processed/publications/document_summaries.jsonl`
+- `data/processed/publications/procedure_summaries.jsonl`
 - `data/processed/publications/publication_metadata_report.json`
 
 От `03_rag`:

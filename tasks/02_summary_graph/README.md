@@ -10,21 +10,24 @@ graph, который RAG потом сможет только читать.
 
 Мы строим не "еще один RAG", а отдельную структурную проекцию корпуса:
 
-1. Читаем `data/processed/publications/publications.jsonl`, если он уже
-   построен, чтобы `Publication` nodes не извлекались заново из каждого chunk.
+1. Читаем `data/processed/publications/publications.jsonl` и
+   `data/processed/publications/procedure_summaries.jsonl`, если они уже
+   построены, чтобы `Publication` nodes и procedure cards не извлекались заново
+   из каждого chunk.
 2. Из parsed chunks/tables/full texts выбираем фрагменты с экспериментами,
    процессами, режимами, свойствами, числами, географией и оборудованием.
-3. Для этих фрагментов делаем RECIPER-style summaries: краткое процедурное
-   представление "материал -> процесс/режим -> условия -> выход/свойство".
+3. Для этих фрагментов делаем дополнительные chunk-level summaries только там,
+   где document-level `procedure_summaries.jsonl` недостаточно детален.
 4. Из summaries и evidence извлекаем typed facts и relations.
 5. По ним строим graph строго по сущностям и отношениям из условия задания.
 6. Каждый node/edge/fact сохраняет provenance: `doc_id`, `chunk_id`,
    `source_span_id`, evidence span, confidence.
 
-Summary слой нужен для graph и последующей интеграции. Он не заменяет исходные
-чанки и не обязан прямо сейчас индексироваться как RAG. Когда RAG будет готов,
-он сможет подключить `procedure_summaries.jsonl` как дополнительный retrieval
-stream, но это отдельная зона `tasks/03_rag/`.
+Summary слой нужен для graph и последующей интеграции. Канонические
+document-level summaries живут в `data/processed/publications/*`. Graph stage
+может добавлять только недостающие chunk-level summaries. Когда RAG будет
+готов, он сможет подключить `procedure_summaries.jsonl` как дополнительный
+retrieval stream, но это отдельная зона `tasks/03_rag/`.
 
 ```mermaid
 flowchart LR
@@ -32,8 +35,9 @@ flowchart LR
     C["data/parsed/tables.jsonl"] --> B
     D["full_texts by doc_id"] --> B
     P["publications.jsonl"] --> I
+    R["procedure_summaries.jsonl"] --> G
     B --> E["Rule extraction"]
-    B --> F["LLM procedure summaries"]
+    B --> F["Gap chunk summaries"]
     E --> G["Typed facts"]
     F --> G
     G --> H["Entity normalization hooks"]
@@ -97,8 +101,12 @@ Read-only входы:
 - `data/parsed/tables.jsonl`
 - `data/parsed/full_texts/*.txt`
 - `data/parsed/spreadsheets_csv/**/*.csv`
-- `data/processed/publications/publications.jsonl` - optional upstream
-  библиография для `Publication` nodes.
+- `data/processed/publications/publications.jsonl` - upstream библиография для
+  `Publication` nodes.
+- `data/processed/publications/document_summaries.jsonl` - upstream overview
+  summaries.
+- `data/processed/publications/procedure_summaries.jsonl` - upstream
+  RECIPER-style procedure cards.
 
 Командный архив данных:
 
@@ -112,7 +120,8 @@ Extraction outputs:
 - `data/processed/extraction/entity_mentions.jsonl`
 - `data/processed/extraction/numeric_conditions.jsonl`
 - `data/processed/extraction/chunk_summaries.jsonl`
-- `data/processed/extraction/procedure_summaries.jsonl`
+- `data/processed/extraction/chunk_procedure_summaries.jsonl` optional, only
+  for gaps not covered by upstream publication summaries
 - `data/processed/extraction/relations.jsonl`
 - `data/processed/extraction/extraction_run_manifest.json`
 
@@ -141,11 +150,12 @@ Graph outputs:
 }
 ```
 
-`procedure_summaries.jsonl`:
+`chunk_procedure_summaries.jsonl` optional:
 
 ```json
 {
   "procedure_summary_id": "proc_...",
+  "publication_id": "pub_...",
   "doc_id": "doc_...",
   "chunk_id": "chunk_...",
   "source_span_id": "span_...",
@@ -258,15 +268,17 @@ Generated outputs:
 ## Implementation Plan
 
 1. Схемы: добавить Pydantic/dataclass-модели для extraction и graph records.
-2. Publication seed: если есть `publications.jsonl`, создать `Publication`
-   node seed map по `doc_id`/`publication_id`.
+2. Publication/procedure seed: если есть `publications.jsonl` и
+   `procedure_summaries.jsonl`, создать seed map по `doc_id`,
+   `publication_id`, `procedure_summary_id`.
 3. Candidate selector: найти chunks с признаками process/experiment/condition:
    temperature, pressure, concentration, %, MPa, C, K, h, min, sample,
    experiment, synthesis, annealing, leaching, flotation, deposit, facility.
 4. Rule extraction: regex + unit parsing для чисел, температур, давлений,
    концентраций, времени, географии и простых material/property mentions.
-5. LLM extraction: YandexGPT Pro 5.1 для JSON summaries по candidate chunks,
-   Lite только для дешевых коротких summaries; RouterAI как optional fallback.
+5. LLM extraction: YandexGPT Pro 5.1 только для недостающих chunk-level facts
+   и summaries; не повторять document-level summary extraction из
+   `02_publication_metadata`.
 6. Validation: строгая проверка JSON, allowed entity/edge types, confidence
    range, required provenance.
 7. Normalization hooks: не делать тяжелую онтологию сразу; ввести adapters для
@@ -314,4 +326,6 @@ MVP graph готов для интеграции, если:
   properties/experiments;
 - contradictions не выдумываются: либо извлекаются с явным evidence, либо
   помечаются как candidates для ручной проверки;
+- graph builder использует upstream `procedure_summaries.jsonl` и не требует
+  повторной LLM-summary обработки каждого документа;
 - RAG может читать graph outputs без импорта `app/graph` internals.

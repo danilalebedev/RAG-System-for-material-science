@@ -13,7 +13,8 @@
 - [`01_parsing/`](01_parsing/) - статус парсинга корпуса, layout артефактов и
   процедура догрузки новых файлов.
 - [`02_publication_metadata/`](02_publication_metadata/) - библиографическая
-  metadata: авторы, год, журнал/конференция, DOI, тип документа, evidence.
+  metadata и document-level RECIPER-style summaries: авторы, год,
+  журнал/конференция, DOI, тип документа, procedure cards, evidence.
 - [`02_summary_graph/`](02_summary_graph/) - активная зона: RECIPER-style
   summaries, extraction фактов и построение typed graph.
 - [`03_rag/`](03_rag/) - зона RAG-разработчика: embeddings, vector index,
@@ -25,9 +26,9 @@
 
 Мы сейчас не трогаем RAG-реализацию. RAG находится в `tasks/03_rag/` и
 разрабатывается отдельно. Наша независимая зона - metadata/graph:
-`tasks/02_publication_metadata/` собирает библиографию источников, а
-`tasks/02_summary_graph/` собирает summaries, typed facts и граф с
-доказательствами.
+`tasks/02_publication_metadata/` собирает библиографию источников и
+document-level summaries; `tasks/02_summary_graph/` читает эти outputs и
+строит typed facts/graph с доказательствами.
 
 ## Правила
 

@@ -64,6 +64,11 @@
 
 - Индексируются две проекции документа: paragraph-view и recipe/procedure-view.
 - Procedure summaries генерируются LLM и описывают материалы, операции и условия.
+- В публичном `rag_database.json` procedure-view хранится как `recipes[]` с
+  полями `material_name`, `synthesis_method`, `steps[].description`,
+  `steps[].parameters`, `key_points`, `entities`.
+- Retrieval code строит recipe text из `Material: ...`, `Method: ...`,
+  descriptions of steps и `Key points: ...`.
 - Recipe-only retrieval слабее paragraph retrieval, но объединение двух потоков улучшает ранние метрики.
 - На BGE-large-en-v1.5 RECIPER достиг Recall@1 86.82%, Recall@5 97.07%, Recall@10 97.85%.
 - В среднем по четырем dense backbones прирост к paragraph-only: +3.73 Recall@1, +2.85 nDCG@10, +3.13 MRR.

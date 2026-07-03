@@ -75,7 +75,7 @@ flowchart LR
     PARSE --> PARSED["data/parsed/*"]
 
     PARSED --> RAGIDX["D. RAG index build"]
-    PARSED --> PUBMETA["B2. Publication metadata"]
+    PARSED --> PUBMETA["B2. Publication metadata + summaries"]
     PARSED --> EXTRACT["C. Metadata extraction"]
     PARSED --> NORM["B. Normalization"]
 
@@ -196,11 +196,12 @@ flowchart LR
 - `app/index/*`
 - `data/indexes/*`
 
-### B2. Publication metadata
+### B2. Publication metadata + summaries
 
-Цель: отдельно извлечь библиографическую metadata источников корпуса, чтобы
-`Publication` nodes строились из нормализованного `publications.jsonl`, а не
-переизвлекались из каждого chunk.
+Цель: отдельно извлечь библиографическую metadata источников корпуса и
+document-level RECIPER-style summaries, чтобы `Publication` nodes и
+procedure cards строились из нормализованных JSONL, а не переизвлекались из
+каждого chunk.
 
 Подробное ТЗ и schema: [`tasks/02_publication_metadata/`](tasks/02_publication_metadata/).
 
@@ -208,6 +209,9 @@ flowchart LR
 
 - `publication_id`, `doc_id`, `document_kind`, `source_type`;
 - `title`, `authors`, `year`, `venue_name`, `venue_type`, `doi`;
+- `document_summary_id`, `summary`, `main_topic`, `key_findings`;
+- `procedure_summary_id`, `material_name`, `synthesis_or_process_method`,
+  `steps`, `key_points`, `conditions`, `observed_effects`;
 - `source_path`, `file_name`, `extension`;
 - `embedded_metadata`, `confidence`, `missing_fields`, `evidence`.
 
@@ -224,6 +228,8 @@ flowchart LR
 - `data/processed/publications/publication_authors.jsonl`
 - `data/processed/publications/publication_venues.jsonl`
 - `data/processed/publications/publication_evidence_spans.jsonl`
+- `data/processed/publications/document_summaries.jsonl`
+- `data/processed/publications/procedure_summaries.jsonl`
 - `data/processed/publications/publication_metadata_report.json`
 
 Нельзя менять:
@@ -237,9 +243,10 @@ flowchart LR
 
 Это зона для второго разработчика.
 
-Цель: извлечь typed facts, procedure summaries, nodes/edges официального графа и
-provenance. Для `Publication` nodes сначала читать
-`data/processed/publications/publications.jsonl`, если он уже построен.
+Цель: извлечь typed facts, nodes/edges официального графа и provenance. Для
+`Publication` nodes и procedure cards сначала читать
+`data/processed/publications/publications.jsonl` и
+`data/processed/publications/procedure_summaries.jsonl`, если они уже построены.
 
 Можно менять:
 
@@ -256,7 +263,7 @@ provenance. Для `Publication` nodes сначала читать
 - `data/processed/extraction/numeric_conditions.jsonl`
 - `data/processed/extraction/facts.jsonl`
 - `data/processed/extraction/relations.jsonl`
-- `data/processed/extraction/procedure_summaries.jsonl`
+- `data/processed/extraction/chunk_procedure_summaries.jsonl` optional
 - `data/processed/extraction/source_spans.jsonl`
 - `data/processed/graph/nodes.jsonl`
 - `data/processed/graph/edges.jsonl`
@@ -302,11 +309,16 @@ provenance. Для `Publication` nodes сначала читать
 }
 ```
 
-Минимальная schema для `procedure_summaries.jsonl`:
+Каноническая schema для document-level `procedure_summaries.jsonl` находится в
+[`tasks/02_publication_metadata/`](tasks/02_publication_metadata/) и пишется в
+`data/processed/publications/procedure_summaries.jsonl`.
+
+Минимальная schema для optional `chunk_procedure_summaries.jsonl`:
 
 ```json
 {
-  "procedure_id": "proc_sum_...",
+  "procedure_summary_id": "proc_sum_...",
+  "publication_id": "pub_...",
   "doc_id": "doc_id",
   "chunk_id": "chunk_id",
   "source_span_id": "span_...",
@@ -320,8 +332,8 @@ provenance. Для `Publication` nodes сначала читать
 
 RECIPER здесь не отдельный RAG-бот. Это дополнительная retrieval-view:
 
-1. extraction находит procedure-like chunks;
-2. LLM делает компактные summaries процедур;
+1. publication metadata step делает document-level procedure cards;
+2. graph extraction добавляет chunk-level summaries только для gaps;
 3. RAG строит отдельный индекс `procedure_summary_vectors`;
 4. online retrieval объединяет chunks + procedure summaries + graph + filters.
 
@@ -352,6 +364,7 @@ RECIPER здесь не отдельный RAG-бот. Это дополните
 Читает, но не редактирует:
 
 - `data/parsed/*`
+- `data/processed/publications/*`
 - `data/processed/extraction/*`
 - `data/processed/graph/*`
 
@@ -503,15 +516,20 @@ RouterAI:
 
 ### Сейчас параллельно
 
-Работа 1, Metadata + graph:
+Работа 1, Publication metadata + summaries + graph:
 
 1. Создать `app/extract/schemas.py`.
-2. Создать `scripts/extract_metadata.py` на маленьком subset 50-100 chunks.
-3. Реализовать regex extraction чисел/единиц/температур/давлений.
-4. Реализовать LLM JSON extraction по candidate chunks.
-5. Сохранить `entity_mentions`, `numeric_conditions`, `relations`,
-   `procedure_summaries`.
-6. Собрать `nodes.jsonl`, `edges.jsonl`, `source_spans.jsonl`.
+2. Создать `scripts/extract_publication_metadata.py` на subset 50-100
+   documents.
+3. Сохранить `publications.jsonl`, `document_summaries.jsonl`,
+   `procedure_summaries.jsonl`.
+4. Создать `scripts/extract_metadata.py` на маленьком subset 50-100 chunks,
+   читая готовые publication/procedure summaries.
+5. Реализовать regex extraction чисел/единиц/температур/давлений.
+6. Реализовать LLM JSON extraction только для недостающих chunk-level facts.
+7. Сохранить `entity_mentions`, `numeric_conditions`, `relations`,
+   `chunk_procedure_summaries` при необходимости.
+8. Собрать `nodes.jsonl`, `edges.jsonl`, `source_spans.jsonl`.
 
 Работа 2, RAG:
 
@@ -529,7 +547,8 @@ RouterAI:
 2. GUI: Streamlit или Gradio.
 3. Demo questions и evaluation.
 4. Graph expansion в RAG, когда graph outputs будут готовы.
-5. Procedure summary index, когда `procedure_summaries.jsonl` будет готов.
+5. Procedure summary index, когда
+   `data/processed/publications/procedure_summaries.jsonl` будет готов.
 
 ## 10. Definition of Done для ближайшего MVP
 
@@ -549,7 +568,10 @@ Metadata + graph считается готовым для интеграции, 
 - все JSONL валидируются Pydantic-схемами;
 - graph содержит только 8 типов узлов и 6 типов ребер;
 - каждое ребро имеет evidence;
-- `procedure_summaries.jsonl` ссылается на исходные chunks.
+- `publications.jsonl`, `document_summaries.jsonl` и `procedure_summaries.jsonl`
+  валидны и имеют evidence;
+- graph build использует upstream procedure summaries без повторной summary
+  обработки каждого документа.
 
 GUI считается готовым для demo, если:
 

@@ -259,7 +259,8 @@ CSV не индексируем полностью dense embeddings.
 читать их:
 
 - `data/processed/extraction/numeric_conditions.jsonl`
-- `data/processed/extraction/procedure_summaries.jsonl`
+- `data/processed/publications/document_summaries.jsonl`
+- `data/processed/publications/procedure_summaries.jsonl`
 - `data/processed/graph/nodes.jsonl`
 - `data/processed/graph/edges.jsonl`
 
@@ -268,7 +269,7 @@ CSV не индексируем полностью dense embeddings.
 Следующий индекс:
 
 - `data/indexes/procedure_summaries/vector.npy`;
-- строится по `procedure_summaries.summary`;
+- строится по `procedure_summaries.key_points + steps[].description`;
 - model тот же `text-embeddings-v2-doc/`;
 - search объединяется с chunk vectors через hybrid/RRF.
 
