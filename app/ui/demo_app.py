@@ -66,6 +66,24 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
 
 
+def render_local_world_cards(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        st.info("Нет данных для Local vs World Dashboard.")
+        return
+    cols = st.columns(2)
+    for index, row in enumerate(rows[:2]):
+        with cols[index]:
+            st.markdown(f"### {row.get('side', 'Source')}")
+            metric_cols = st.columns(2)
+            metric_cols[0].metric("Sources", row.get("sources", 0))
+            metric_cols[1].metric("Confidence", row.get("confidence", "n/a"))
+            st.write(f"**Top methods:** {row.get('top_methods') or 'n/a'}")
+            st.write(f"**Parameter ranges:** {row.get('numeric_ranges') or 'n/a'}")
+            st.write(f"**Geography:** {row.get('geography') or 'n/a'}")
+            st.write(f"**Years:** {row.get('years') or 'n/a'}")
+            st.write(f"**Evidence:** {row.get('evidence') or 'n/a'}")
+
+
 def render_evidence_cards(cards: list[dict[str, Any]], *, limit: int = 8) -> None:
     if not cards:
         st.info("Нет evidence cards.")
@@ -92,7 +110,18 @@ def render_heatmap(rows: list[dict[str, Any]]) -> None:
     df = pd.DataFrame(rows)
     pivot = df.pivot_table(index="material", columns="method", values=["local", "web"], aggfunc="sum", fill_value=0)
     st.dataframe(pivot, use_container_width=True)
-    render_table(rows)
+    display_df = table_df(rows)
+    color_map = {
+        "есть локально и во внешней литературе": "background-color: #d8f3dc",
+        "только локально": "background-color: #dbeafe",
+        "только web": "background-color: #ffedd5",
+    }
+
+    def style_status(row: pd.Series) -> list[str]:
+        color = color_map.get(str(row.get("status", "")), "")
+        return [color if column == "status" else "" for column in row.index]
+
+    st.dataframe(display_df.style.apply(style_status, axis=1), use_container_width=True, hide_index=True)
 
 
 def result_rows(run: Any) -> list[dict[str, Any]]:
@@ -233,7 +262,10 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
     render_query_decomposer(run)
 
     st.subheader("Local vs World Dashboard")
-    render_table(local_vs_world_dashboard(run))
+    dashboard_rows = local_vs_world_dashboard(run)
+    render_local_world_cards(dashboard_rows)
+    with st.expander("Dashboard data"):
+        render_table(dashboard_rows)
 
     col1, col2 = st.columns(2)
     with col1:
