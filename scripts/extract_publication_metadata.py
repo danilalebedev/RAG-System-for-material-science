@@ -36,6 +36,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rebuild", action="store_true", default=False)
     parser.add_argument("--no-llm", action="store_true", default=False)
     parser.add_argument("--fallback-model", action="store_true", default=False)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of concurrent document workers for API-bound extraction. Default: 1, capped at 4.",
+    )
     parser.add_argument("--aggregate-only", action="store_true", default=False)
     parser.add_argument("--quality-report", action="store_true", default=False)
     parser.add_argument("--quality-report-path", default=None)
@@ -137,6 +143,7 @@ def main() -> int:
         resume=args.resume and not args.rebuild,
         no_llm=args.no_llm,
         retry_failed=args.retry_failed,
+        workers=args.workers,
     )
     print(manifest)
     maybe_write_quality_report(args, root, output_dir)

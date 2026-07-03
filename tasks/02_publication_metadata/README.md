@@ -569,6 +569,17 @@ Optional shared helpers после согласования:
 .\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --limit 100 --output-dir data\processed\publications
 ```
 
+Ускоренный, но безопасный режим для API-bound прогона:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --limit 400 --output-dir data\processed\publications --resume --workers 2 --quality-report --summary-audit --summary-audit-sample-size 15
+```
+
+`--workers` по умолчанию равен `1` и ограничен сверху `4`. Для локального ПК
+рекомендуемый режим `2`: он повышает утилизацию времени ожидания Yandex API, но
+не должен заметно грузить RAM/диск. Значения `3-4` использовать только если
+нет rate limit/API errors и системная память остается ниже 70-80%.
+
 С quality gate:
 
 ```powershell

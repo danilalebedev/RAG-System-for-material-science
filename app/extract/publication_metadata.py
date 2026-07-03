@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -1360,11 +1361,13 @@ def process_documents(
     resume: bool,
     no_llm: bool,
     retry_failed: bool = False,
+    workers: int = 1,
 ) -> dict[str, Any]:
     records_dir = output_dir / "records"
     raw_dir = output_dir / "llm_raw"
     records_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
+    worker_count = max(1, min(int(workers), 4))
     doc_ids = {str(doc.get("doc_id")) for doc in docs}
     chunk_map, table_map = collect_candidate_maps(
         doc_ids=doc_ids,
@@ -1379,14 +1382,14 @@ def process_documents(
     skipped = 0
     failed = 0
     llm_used = 0
-    for position, doc in enumerate(docs, start=1):
+
+    def process_one(position: int, doc: dict[str, Any]) -> dict[str, int]:
         doc_id = str(doc.get("doc_id"))
         record_path = records_dir / f"{doc_id}.json"
         if resume and record_path.exists():
             existing = load_completed_record(record_path)
             if not retry_failed or (existing or {}).get("llm", {}).get("status") != "failed":
-                skipped += 1
-                continue
+                return {"processed": 0, "skipped": 1, "failed": 0, "llm_used": 0, "position": position}
         header_text = load_header_text(doc, config.max_header_chars)
         baseline = build_baseline_bundle(
             doc,
@@ -1397,6 +1400,8 @@ def process_documents(
         bundle = baseline
         raw_response = None
         raw_path: Path | None = None
+        doc_failed = 0
+        doc_llm_used = 0
         if not no_llm and client is not None and str(doc.get("status")) == "ok":
             try:
                 source_package = build_source_package(doc, baseline, max_chars=config.source_package_max_chars)
@@ -1426,7 +1431,7 @@ def process_documents(
                     "repair_usage": repair_usage,
                     "raw_response_path": str(raw_path),
                 }
-                llm_used += 1
+                doc_llm_used = 1
                 time.sleep(config.sleep_seconds)
             except Exception as exc:  # noqa: BLE001 - per-document failure should not stop the corpus.
                 bundle["publication"]["extraction_status"] = "partial"
@@ -1454,7 +1459,7 @@ def process_documents(
                         "fallback": "metadata_only_baseline",
                     }
                 else:
-                    failed += 1
+                    doc_failed = 1
                     bundle["publication"].setdefault("review_notes", []).append(f"llm_error: {exc}")
                     bundle["llm"] = {
                         "used": True,
@@ -1463,12 +1468,35 @@ def process_documents(
                         "raw_response_preview": compact_text(raw_response, 1000) if raw_response else None,
                     }
         write_json(record_path, bundle)
-        processed += 1
-        if position % 10 == 0:
+        return {"processed": 1, "skipped": 0, "failed": doc_failed, "llm_used": doc_llm_used, "position": position}
+
+    def apply_result(result: dict[str, int], current: int) -> None:
+        nonlocal processed, skipped, failed, llm_used
+        processed += result["processed"]
+        skipped += result["skipped"]
+        failed += result["failed"]
+        llm_used += result["llm_used"]
+        if current % 10 == 0:
             print(
-                f"processed={processed} skipped={skipped} failed={failed} llm_used={llm_used} current={position}/{len(docs)}",
+                (
+                    f"processed={processed} skipped={skipped} failed={failed} "
+                    f"llm_used={llm_used} current={current}/{len(docs)} workers={worker_count}"
+                ),
                 flush=True,
             )
+
+    if worker_count == 1:
+        for position, doc in enumerate(docs, start=1):
+            apply_result(process_one(position, doc), position)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(process_one, position, doc): position
+                for position, doc in enumerate(docs, start=1)
+            }
+            for current, future in enumerate(as_completed(future_map), start=1):
+                apply_result(future.result(), current)
+
     counts = aggregate_records(records_dir, output_dir)
     manifest = {
         "generated_at": utc_now(),
@@ -1480,6 +1508,7 @@ def process_documents(
         "output_counts": counts,
         "config": config.__dict__,
         "no_llm": no_llm,
+        "workers": worker_count,
     }
     write_json(output_dir / "publication_metadata_manifest.json", manifest)
     return manifest
