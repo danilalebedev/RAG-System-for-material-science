@@ -132,12 +132,19 @@ graph outputs и parsed sources.
 Поверх literature-search слоя добавлен демонстрационный cockpit, рассчитанный на проверку решения через GUI:
 
 - первый экран показывает пользовательский запрос, переформулированный поисковый запрос, ключевые слова и editable slots:
-  материалы, процессы, свойства, условия/числа, география/период и варианты поисковых запросов;
-- sidebar содержит готовые demo scenarios для быстрого показа разных задач без ручного набора запроса;
-- вкладка `Cockpit` показывает local-vs-web coverage, gap radar и краткий управленческий вывод;
-- вкладка `Сравнение` показывает method comparison matrix и сводку `материал x методика` после Deep Search;
-- `full_run.json` теперь включает cockpit payload: query decomposition, coverage metrics, method matrix, gap radar
-  и executive brief markdown;
+  материал, процесс, условия, числовые ограничения, география, период, свойства, оборудование и варианты
+  поисковых запросов;
+- sidebar содержит готовые demo scenarios, session presets и structured filters по географии/периоду;
+- вкладка `Cockpit` показывает Local vs World Dashboard, coverage signals, Knowledge Gap Radar, evidence cards
+  и краткий управленческий вывод;
+- вкладка `Сравнение` показывает Contradiction & Consensus Panel, method comparison matrix и heatmap
+  `материал x методика` после Deep Search;
+- вкладка `Evidence` показывает evidence cards и кандидаты числовых диапазонов; вкладка `Графики` строит mini graph
+  `Material -> Process -> Equipment -> Output`;
+- `full_run.json` теперь включает cockpit payload: query decomposition, dashboard metrics, method matrix, heatmap,
+  consensus panel, evidence cards, numeric intervals, mini graph edges, gap radar и executive brief markdown;
+- executive brief структурирован как `5 ключевых выводов`, `3 риска`, `3 пробела`, `top-5 источников`
+  и рекомендуемые следующие эксперименты/литературные направления;
 - каждый run сохраняет отдельный `executive_brief.md`, `executive_brief.docx` и, если включена PDF-генерация,
   `executive_brief.pdf`.
 

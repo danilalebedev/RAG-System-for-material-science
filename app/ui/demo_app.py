@@ -15,11 +15,17 @@ if str(ROOT) not in sys.path:
 
 from app.query.cockpit import (  # noqa: E402
     DEMO_SCENARIOS,
+    consensus_panel_rows,
     executive_brief_markdown,
+    evidence_cards,
     gap_radar_rows,
+    graphviz_dot,
     local_vs_web_metrics,
+    local_vs_world_dashboard,
     method_heatmap_rows,
     method_matrix_rows,
+    mini_graph_edges,
+    numeric_interval_rows,
     query_decomposition,
 )
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
@@ -54,6 +60,35 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
         st.info(empty_text)
         return
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
+
+
+def render_evidence_cards(cards: list[dict[str, Any]], *, limit: int = 8) -> None:
+    if not cards:
+        st.info("Нет evidence cards.")
+        return
+    for card in cards[:limit]:
+        title = display_value(card.get("title"), max_chars=140) or "Untitled"
+        label = f"{card.get('kind', 'source').upper()} | {title}"
+        with st.expander(label, expanded=False):
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Confidence", card.get("confidence") or "n/a")
+            col2.metric("Year", card.get("year") or "n/a")
+            col3.metric("Source", card.get("source") or "n/a")
+            st.write(f"**Method / signal:** {card.get('method') or 'n/a'}")
+            st.write(f"**Numeric ranges:** {card.get('numeric_ranges') or 'n/a'}")
+            st.write(f"**Why relevant:** {card.get('why_relevant') or 'n/a'}")
+            if card.get("link"):
+                st.markdown(f"[Open evidence]({card['link']})")
+
+
+def render_heatmap(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        st.info("Heatmap появится после Deep Search или procedure summaries.")
+        return
+    df = pd.DataFrame(rows)
+    pivot = df.pivot_table(index="material", columns="method", values=["local", "web"], aggfunc="sum", fill_value=0)
+    st.dataframe(pivot, use_container_width=True)
+    render_table(rows)
 
 
 def result_rows(run: Any) -> list[dict[str, Any]]:
@@ -152,9 +187,12 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
 
     render_query_decomposer(run)
 
+    st.subheader("Local vs World Dashboard")
+    render_table(local_vs_world_dashboard(run))
+
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Local vs web coverage")
+        st.subheader("Coverage signals")
         render_table(local_vs_web_metrics(run))
     with col2:
         st.subheader("Gap radar")
@@ -162,8 +200,11 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
 
     heatmap = method_heatmap_rows(run)
     if heatmap:
-        st.subheader("Материалы x методики")
-        render_table(heatmap, empty_text="Матрица методик появится после Deep Search.")
+        st.subheader("Knowledge Gap Radar: material x process")
+        render_heatmap(heatmap)
+
+    st.subheader("Evidence cards")
+    render_evidence_cards(evidence_cards(run), limit=4)
 
     if search_queries:
         with st.expander("Варианты запроса для поиска"):
@@ -171,6 +212,11 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
                 st.write(f"- {item}")
     with st.expander("Краткий управленческий вывод"):
         st.markdown(executive_brief_markdown(run))
+    if st.button("Save query preset", key=f"save_preset_{str(run.output_dir or run.request.query)[-80:]}"):
+        presets = st.session_state.setdefault("saved_presets", [])
+        if run.request.query not in presets:
+            presets.append(run.request.query)
+        st.toast("Preset saved")
     with st.expander("Как ранжируются статьи"):
         st.markdown(
             "- результаты выбранных API-баз объединяются и дедуплицируются по DOI или нормализованному title;\n"
@@ -255,12 +301,14 @@ def render_run(run: Any) -> None:
                         st.warning("LLM credentials не найдены, поэтому сохранен metadata-only fallback summary.")
 
     with tabs[3]:
+        st.subheader("Contradiction & Consensus Panel")
+        render_table(consensus_panel_rows(run), empty_text="Consensus panel появится после сравнения local/web методик.")
         st.subheader("Method comparison matrix")
         render_table(method_matrix_rows(run), empty_text="Матрица методик появится после Deep Search.")
         heatmap = method_heatmap_rows(run)
         if heatmap:
-            st.subheader("Материалы x методики")
-            render_table(heatmap)
+            st.subheader("Knowledge Gap Radar: material x process")
+            render_heatmap(heatmap)
         col1, col2 = st.columns(2)
         with col1:
             st.write("Confirmed")
@@ -274,6 +322,10 @@ def render_run(run: Any) -> None:
             render_table(comparison_rows(run, "differing_conditions"))
 
     with tabs[4]:
+        st.subheader("Evidence cards")
+        render_evidence_cards(evidence_cards(run), limit=20)
+        st.subheader("Numeric interval candidates")
+        render_table(numeric_interval_rows(run), empty_text="Числовые диапазоны не найдены в текущих evidence snippets.")
         st.write("Local evidence")
         render_table(local_rows(run))
         if run.comparison:
@@ -292,6 +344,15 @@ def render_run(run: Any) -> None:
                 ]
             ).set_index("bucket")
             st.bar_chart(coverage)
+        st.write("Mini graph: Material -> Process -> Equipment -> Output")
+        edges = mini_graph_edges(run)
+        if edges:
+            try:
+                st.graphviz_chart(graphviz_dot(run), use_container_width=True)
+            except Exception:
+                render_table(edges)
+            else:
+                render_table(edges)
         radar = pd.DataFrame(gap_radar_rows(run))
         if not radar.empty:
             numeric_radar = radar.copy()
@@ -409,6 +470,16 @@ def main() -> None:
             if st.button("Запустить сценарий", type="primary"):
                 st.session_state["queued_query"] = selected_scenario["query"]
                 st.rerun()
+        saved_presets = st.session_state.get("saved_presets", [])
+        if saved_presets:
+            st.caption("Saved presets")
+            for index, preset in enumerate(saved_presets[-5:]):
+                if st.button(preset[:42], key=f"preset_{index}"):
+                    st.session_state["queued_query"] = preset
+                    st.rerun()
+        st.subheader("Structured filters")
+        geography_filter = st.text_input("Geography", placeholder="например: Норильск, Canada")
+        year_range = st.slider("Publication period", min_value=1950, max_value=2026, value=(2000, 2026), step=1)
         local_search = st.checkbox("Локальный поиск", value=True)
         web_search = st.checkbox("Внешний поиск публикаций", value=True)
         source_options = st.multiselect(
@@ -455,9 +526,15 @@ def main() -> None:
         st.session_state["history"].append({"role": "user", "content": active_query})
         with st.chat_message("user"):
             st.write(active_query)
+        filter_parts = []
+        if geography_filter:
+            filter_parts.append(f"география: {geography_filter}")
+        if year_range != (2000, 2026):
+            filter_parts.append(f"период публикаций: {year_range[0]}-{year_range[1]}")
+        search_query = " ".join([active_query, *filter_parts]).strip()
 
         request = LiteratureSearchRequest(
-            query=active_query,
+            query=search_query,
             top_k=top_k,
             sources=source_options if web_search else [],
             deep_search="top5" if deep_search else "none",
@@ -477,6 +554,8 @@ def main() -> None:
             with st.spinner("Выполняю поиск..."):
                 run = run_literature_search(request)
             answer = f"Найдено внешних источников: {len(run.results)}; локальных совпадений: {len(run.local_matches)}."
+            if filter_parts:
+                st.caption(f"Фильтры применены к поисковой формулировке: {', '.join(filter_parts)}")
             st.write(answer)
         st.session_state["history"].append({"role": "assistant", "content": answer})
         render_run(run)

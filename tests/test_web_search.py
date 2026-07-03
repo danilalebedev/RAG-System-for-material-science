@@ -17,11 +17,16 @@ from app.web_search.deep_search import run_deep_search
 from app.web_search.fetch import is_safe_external_url
 from app.web_search.keywords import extract_keywords
 from app.query.cockpit import (
+    consensus_panel_rows,
     executive_brief_markdown,
+    evidence_cards,
     gap_radar_rows,
+    local_vs_world_dashboard,
     local_vs_web_metrics,
     method_heatmap_rows,
     method_matrix_rows,
+    mini_graph_edges,
+    numeric_interval_rows,
     query_decomposition,
 )
 from app.query.reports import (
@@ -480,6 +485,7 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
         year=2024,
         doi="10.1000/nickel",
         url="https://example.org/paper",
+        abstract="Annealing at 950 C changes hardness in nickel alloys.",
     )
     comparison = MethodComparison(
         query="nickel alloy annealing 900 C",
@@ -488,20 +494,37 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
         web_only_methods=[{"scope": "web", "material": "cobalt alloy", "method": "aging"}],
         differing_conditions=[{"material": "nickel alloy", "method": "annealing"}],
         rows=[
-            {"scope": "local", "title": "Local nickel work", "material": "nickel alloy", "method": "annealing", "conditions": [{"temperature": "900 C"}]},
-            {"scope": "web", "title": "Nickel alloy annealing hardness", "material": "nickel alloy", "method": "annealing", "conditions": [{"temperature": "950 C"}]},
+            {
+                "scope": "local",
+                "title": "Local nickel work",
+                "material": "nickel alloy",
+                "method": "annealing",
+                "conditions": [{"temperature": "900 C"}],
+                "equipment": ["tube furnace"],
+                "outputs": ["hardness"],
+            },
+            {
+                "scope": "web",
+                "title": "Nickel alloy annealing hardness",
+                "material": "nickel alloy",
+                "method": "annealing",
+                "conditions": [{"temperature": "950 C"}],
+                "equipment": ["furnace"],
+                "outputs": ["ductility"],
+            },
         ],
     )
     run = LiteratureSearchRun(
-        request=LiteratureSearchRequest(query="nickel alloy annealing 900 C Norilsk", deep_search="top5", deep_search_limit=3),
+        request=LiteratureSearchRequest(query="nickel alloy annealing 900 C Norilsk autoclave 2020", deep_search="top5", deep_search_limit=3),
         query_plan={
             "corrected_query": "nickel alloy annealing hardness",
             "material_terms": ["nickel alloy"],
             "process_terms": ["annealing"],
             "property_terms": ["hardness"],
+            "equipment_terms": ["autoclave"],
             "search_queries": ["nickel alloy annealing materials science"],
         },
-        keywords=["nickel", "alloy", "annealing", "hardness", "Norilsk"],
+        keywords=["nickel", "alloy", "annealing", "hardness", "Norilsk", "autoclave"],
         results=[source],
         local_matches=[{"title": "Local nickel work"}],
         deep_results=[DeepSearchResult(result_id="web_1", source_result=source, document_summary={"summary": "Annealing changes hardness."})],
@@ -509,16 +532,28 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     )
 
     slots = query_decomposition(run)
-    assert any(row["slot"] == "Материалы" and "nickel alloy" in row["values"] for row in slots)
+    assert any(row["slot"] == "Материал" and "nickel alloy" in row["values"] for row in slots)
     assert any("900 C" in row["values"] for row in slots)
+    assert any(row["slot"] == "Оборудование" and "autoclave" in row["values"] for row in slots)
+    assert any(row["slot"] == "Период" and "2020" in row["values"] for row in slots)
     metrics = local_vs_web_metrics(run)
     assert metrics[0]["local"] == 1
     assert metrics[0]["web"] == 1
+    dashboard = local_vs_world_dashboard(run)
+    assert {row["side"] for row in dashboard} == {"Локальная база", "Мировая литература"}
     assert method_matrix_rows(run)[0]["scope"] == "Локальная БД"
+    assert method_matrix_rows(run)[0]["equipment"] == "tube furnace"
     assert method_heatmap_rows(run)[0]["status"] == "есть локально и во внешней литературе"
+    assert consensus_panel_rows(run)[0]["count"] == 1
+    assert evidence_cards(run)[0]["kind"] == "web"
+    assert numeric_interval_rows(run)
+    assert {"from": "nickel alloy", "to": "annealing", "relation": "process", "scope": "local"} in mini_graph_edges(run)
     assert any(row["signal"] == "Разные условия/диапазоны" and row["value"] == 1 for row in gap_radar_rows(run))
     brief = executive_brief_markdown(run)
     assert "Краткий управленческий вывод" in brief
+    assert "5 ключевых выводов" in brief
+    assert "3 риска" in brief
+    assert "3 пробела" in brief
     assert "Nickel alloy annealing hardness" in brief
     assert "https://example.org/paper" in brief
 

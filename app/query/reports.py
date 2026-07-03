@@ -246,9 +246,21 @@ def build_literature_report(run: Any) -> str:
     lines.extend(["", "### Local vs web coverage"])
     for row in cockpit.local_vs_web_metrics(run):
         lines.append(f"- {row['metric']}: local={row['local']}, web={row['web']} - {row['interpretation']}")
+    lines.extend(["", "### Local vs World Dashboard"])
+    for row in cockpit.local_vs_world_dashboard(run):
+        lines.append(
+            f"- {row['side']}: sources={row['sources']}, methods={row['top_methods']}, ranges={row['numeric_ranges']}, "
+            f"years={row['years']}, confidence={row['confidence']}"
+        )
     lines.extend(["", "### Gap radar"])
     for row in cockpit.gap_radar_rows(run):
         lines.append(f"- {row['signal']}: {row['value']} ({row['level']}) - {row['recommendation']}")
+    lines.extend(["", "### Contradiction & Consensus"])
+    for row in cockpit.consensus_panel_rows(run):
+        lines.append(f"- {row['bucket']}: {row['count']} - {row['action']}")
+    lines.extend(["", "### Evidence highlights"])
+    for row in cockpit.evidence_cards(run)[:8]:
+        lines.append(f"- {row['kind']}: {compact_text(row['title'], 160)}; confidence={row['confidence']}; link={row['link']}")
 
     insights = comparison_insights(run)
     if insights:
@@ -304,8 +316,13 @@ def build_full_run_payload(run: Any) -> dict[str, Any]:
         "cockpit": {
             "query_decomposition": cockpit.query_decomposition(run),
             "local_vs_web_metrics": cockpit.local_vs_web_metrics(run),
+            "local_vs_world_dashboard": cockpit.local_vs_world_dashboard(run),
             "method_matrix": cockpit.method_matrix_rows(run),
             "method_heatmap": cockpit.method_heatmap_rows(run),
+            "consensus_panel": cockpit.consensus_panel_rows(run),
+            "evidence_cards": cockpit.evidence_cards(run),
+            "numeric_intervals": cockpit.numeric_interval_rows(run),
+            "mini_graph_edges": cockpit.mini_graph_edges(run),
             "gap_radar": cockpit.gap_radar_rows(run),
             "executive_brief_markdown": cockpit.executive_brief_markdown(run),
         },
