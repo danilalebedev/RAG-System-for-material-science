@@ -5,17 +5,18 @@
   "embedding": {
     "backend": "yandex",
     "default_model": "fallback",
-    "endpoint": "https://ai.api.cloud.yandex.net/foundationModels/v1/textEmbedding",
+    "endpoint": "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding",
     "auth_scheme": "Api-Key",
     "doc_model_uri_template": "emb://{folder_id}/text-embeddings-v2-doc/",
     "query_model_uri_template": "emb://{folder_id}/text-embeddings-v2-query/",
     "fallback_doc_model_uri_template": "emb://{folder_id}/text-search-doc/latest",
     "fallback_query_model_uri_template": "emb://{folder_id}/text-search-query/latest",
-    "max_input_chars": 2800,
+    "max_input_chars": 1700,
+    "max_input_terms": 1000,
     "request_timeout_seconds": 60,
-    "max_retries": 8,
+    "max_retries": 20,
     "retry_backoff_seconds": 2.0,
-    "rate_limit_sleep_seconds": 30.0
+    "rate_limit_sleep_seconds": 0.1
   },
   "local_hash": {
     "dimension": 384

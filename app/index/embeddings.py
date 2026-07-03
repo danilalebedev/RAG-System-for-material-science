@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ class EmbeddingConfig:
     max_retries: int = 4
     retry_backoff_seconds: float = 2.0
     max_input_chars: int = 2800
+    max_input_terms: int = 1400
     rate_limit_sleep_seconds: float = 30.0
 
     @classmethod
@@ -54,6 +56,7 @@ class EmbeddingConfig:
             max_retries=int(mapping.get("max_retries") or 4),
             retry_backoff_seconds=float(mapping.get("retry_backoff_seconds") or 2.0),
             max_input_chars=int(mapping.get("max_input_chars") or 2800),
+            max_input_terms=int(mapping.get("max_input_terms") or 1400),
             rate_limit_sleep_seconds=float(mapping.get("rate_limit_sleep_seconds") or 30.0),
         )
 
@@ -97,14 +100,14 @@ class YandexEmbeddingClient:
         self.dimension: int | None = None
 
     def embed_text(self, text: str) -> list[float]:
-        text = prepare_embedding_text(text, max_chars=self.config.max_input_chars)
-        payload = {"modelUri": self.model_uri, "text": text}
+        prepared_text = prepare_embedding_text(text, max_chars=self.config.max_input_chars, max_terms=self.config.max_input_terms)
         headers = {
             "Authorization": f"{self.config.auth_scheme} {self.api_key}",
             "Content-Type": "application/json",
         }
         last_error: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
+            payload = {"modelUri": self.model_uri, "text": prepared_text}
             try:
                 response = self.session.post(
                     self.config.endpoint,
@@ -113,7 +116,11 @@ class YandexEmbeddingClient:
                     timeout=self.config.request_timeout_seconds,
                 )
                 if response.status_code == 429:
-                    raise RateLimitError(f"HTTP 429: {response.text[:500]}")
+                    retry_after = retry_after_seconds(response)
+                    raise RateLimitError(f"HTTP 429: {response.text[:500]}", retry_after=retry_after)
+                if response.status_code == 400 and is_token_limit_error(response.text) and len(prepared_text) > 400:
+                    prepared_text = shrink_embedding_text(prepared_text)
+                    continue
                 if response.status_code in {500, 502, 503, 504}:
                     raise RuntimeError(f"transient HTTP {response.status_code}: {response.text[:500]}")
                 if response.status_code >= 400:
@@ -127,7 +134,8 @@ class YandexEmbeddingClient:
                 if attempt >= self.config.max_retries:
                     break
                 if isinstance(exc, RateLimitError):
-                    time.sleep(self.config.rate_limit_sleep_seconds)
+                    sleep_seconds = exc.retry_after or self.config.rate_limit_sleep_seconds
+                    time.sleep(sleep_seconds + random.uniform(0.0, 0.25))
                 else:
                     time.sleep(self.config.retry_backoff_seconds * (attempt + 1))
         raise RuntimeError(f"Yandex embedding request failed: {last_error}")
@@ -146,7 +154,19 @@ def parse_embedding_response(payload: dict[str, Any]) -> list[float]:
 
 
 class RateLimitError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def retry_after_seconds(response: requests.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
 
 
 class LocalHashEmbeddingClient:
@@ -172,8 +192,12 @@ class LocalHashEmbeddingClient:
         return vector.astype(np.float32).tolist()
 
 
-def prepare_embedding_text(text: str, *, max_chars: int) -> str:
+def prepare_embedding_text(text: str, *, max_chars: int, max_terms: int | None = None) -> str:
     prepared = WHITESPACE_RE.sub(" ", str(text or "")).strip()
+    if max_terms and max_terms > 0:
+        terms = prepared.split()
+        if len(terms) > max_terms:
+            prepared = " ".join(terms[:max_terms])
     if max_chars <= 0 or len(prepared) <= max_chars:
         return prepared
     cutoff = max(prepared.rfind(". ", 0, max_chars), prepared.rfind("; ", 0, max_chars), prepared.rfind(" ", 0, max_chars))
@@ -182,9 +206,23 @@ def prepare_embedding_text(text: str, *, max_chars: int) -> str:
     return prepared[:cutoff].strip()
 
 
+def shrink_embedding_text(text: str) -> str:
+    target = max(400, int(len(text) * 0.75))
+    return prepare_embedding_text(text, max_chars=target, max_terms=None)
+
+
+def is_token_limit_error(text: str) -> bool:
+    lowered = text.lower()
+    return "number of input tokens" in lowered and "no more than" in lowered
+
+
 def embedding_input_text(client: EmbeddingClient, text: str) -> str:
     if isinstance(client, YandexEmbeddingClient):
-        return prepare_embedding_text(text, max_chars=client.config.max_input_chars)
+        return prepare_embedding_text(
+            text,
+            max_chars=client.config.max_input_chars,
+            max_terms=client.config.max_input_terms,
+        )
     return text
 
 
