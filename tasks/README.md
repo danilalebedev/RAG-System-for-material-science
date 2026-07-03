@@ -18,7 +18,8 @@
 - [`02_summary_graph/`](02_summary_graph/) - активная зона: RECIPER-style
   summaries, extraction фактов и построение typed graph.
 - [`03_rag/`](03_rag/) - зона RAG-разработчика: embeddings, vector index,
-  lexical baseline, retrieval API.
+  lexical baseline, retrieval API. Отчет по Excel-поиску:
+  [`03_rag/excel_spreadsheet_search_report.md`](03_rag/excel_spreadsheet_search_report.md).
 - [`04_query_gui_eval/`](04_query_gui_eval/) - будущая интеграция query layer,
   GUI, evaluation и demo flows.
 
