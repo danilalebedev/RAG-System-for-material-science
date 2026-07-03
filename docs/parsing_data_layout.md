@@ -13,6 +13,14 @@
 .\.venv\Scripts\python.exe scripts\build_parsing_report.py
 ```
 
+Для передачи результата другому разработчику:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\package_parsed_artifacts.py
+```
+
+См. `docs/data_sharing.md`.
+
 Для smoke test:
 
 ```powershell
@@ -69,4 +77,3 @@
 7. Для DOCX/XLSX проверить `data/parsed/tables.jsonl`.
 
 Достаточно для перехода к RAG: 87.6% локально доступных файлов уже `ok`, у chunks есть `doc_id` и source path, проблемные форматы перечислены отдельно.
-

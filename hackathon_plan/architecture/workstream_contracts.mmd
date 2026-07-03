@@ -18,12 +18,13 @@ flowchart LR
     GRAPH_DATA --> RAG
     RAG --> IDX["data/indexes/*"]
 
-    USER["User question"] --> QUERY["E. Query understanding<br/>intent + slots + clarification"]
+    USER["User question"] --> GUI["G. GUI / demo application<br/>filters + tabs + export"]
+    GUI --> QUERY["E. Query backend<br/>intent + slots + clarification"]
     QUERY --> RAG
     RAG --> ANSWER["Grounded answer<br/>evidence + mini-graph + gaps"]
+    ANSWER --> GUI
 
     PARSED --> EVAL["F. Evaluation"]
     FACTS --> EVAL
     GRAPH_DATA --> EVAL
     IDX --> EVAL
-

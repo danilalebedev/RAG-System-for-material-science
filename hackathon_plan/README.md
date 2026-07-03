@@ -18,6 +18,7 @@
 - `task2_actual/development_plan_task2.md` - обновленный структурированный план разработки под актуальное условие.
 - `task2_actual/graph_retrieval_entity_design.md` - уточненная официальная модель графа, JSON extraction, vector search и graph build.
 - `task2_actual/workstream_contracts.md` - разделение независимых областей разработки, границы файлов и контракты JSONL.
+- `task2_actual/workstream_technical_specs.md` - техническое ТЗ по каждому workstream: требования организаторов, GUI, библиотеки, решения, критерии готовности, ссылки на работы.
 - `task2_actual/task2_architecture.png` - архитектурная диаграмма обновленного решения.
 - `architecture/workstream_contracts.mmd` - Mermaid-граф зависимостей между областями разработки.
 - `baselines/baseline_matrix.md` - варианты baseline-решений и что в них измерять.
