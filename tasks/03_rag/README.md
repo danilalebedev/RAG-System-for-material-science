@@ -2,10 +2,43 @@
 
 Дата: 2026-07-03.
 
-Статус: отдельная зона RAG-разработчика. Текущая active workstream для нас -
-`../02_summary_graph/`; RAG-код сейчас не трогаем. Этот документ сохранен как
-handoff: в нем описаны входы, модель embeddings, индексы и acceptance criteria,
-чтобы второй разработчик мог двигаться независимо.
+## 0. Текущая реализация
+
+Реализован первый RAG-слой напрямую по `data/parsed/chunks.jsonl`, без ожидания document/procedure summaries:
+
+- `config/retrieval/default.json` - пути, модели embeddings, параметры build/search;
+- `app/index/embeddings.py` - Yandex AI Studio embeddings client и явный `local-hash` backend для offline smoke;
+- `app/index/vector_store.py` - `vector.npy`, `metadata.jsonl`, `manifest.json`, append-only `embedding_cache.jsonl`;
+- `app/index/lexical.py` - SQLite FTS5 lexical baseline;
+- `app/rag/retrieval.py` - dense/lexical search materialization и RRF hybrid;
+- `scripts/build_indexes.py` - сборка vector + lexical индексов по chunks;
+- `scripts/search_cli.py` - CLI-поиск по готовым индексам.
+
+Smoke без API-расходов:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_indexes.py --limit 1000 --embedding-backend local-hash --rebuild
+.\.venv\Scripts\python.exe scripts\build_indexes.py --limit 1000 --embedding-backend local-hash --resume --skip-lexical
+.\.venv\Scripts\python.exe scripts\search_cli.py "никелевые концентраты обжиг" --top-k 5
+```
+
+Проверка готового индекса и релевантности нескольких поисков:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_rag_index.py
+```
+
+Validation agent проверяет наличие `vector.npy` / `metadata.jsonl` / `manifest.json`, согласованность размеров,
+нормализацию vectors, SQLite FTS index, затем запускает несколько доменных запросов и проверяет, что top-k содержит
+ожидаемые термины. Отчет пишется в `data/indexes/retrieval_validation_report.json`, результаты отдельных поисков -
+в `data/indexes/retrieval_test_results.jsonl`.
+
+Yandex dense build использует тот же CLI без `--embedding-backend local-hash`; `YANDEX_API_KEY` и `YANDEX_FOLDER_ID` должны быть только в `.env`. В текущем окружении `text-embeddings-v2-*` вернул `invalid model_uri`, поэтому дефолт для Yandex поставлен на рабочий fallback `text-search-doc/query/latest`; v2 можно перепроверить через `--model doc`, когда URI/доступ будут актуальны.
+
+Статус: активная зона RAG-разработчика. Индекс по raw chunks строится независимо
+от `../02_summary_graph/` и не ждет document/procedure summaries. Этот документ
+остается handoff: в нем описаны входы, модель embeddings, индексы и acceptance
+criteria, чтобы RAG можно было развивать независимо.
 
 Цель: построить первый воспроизводимый RAG-слой поверх уже распарсенного корпуса:
 dense embeddings по chunks, локальную векторную базу, lexical baseline и CLI
@@ -246,12 +279,18 @@ CSV не индексируем полностью dense embeddings.
   или sheet preview;
 - answer layer получает только выбранные строки/колонки, не весь CSV.
 
-Будущий helper:
+Реализованный helper:
 
 - `app/index/spreadsheet_store.py`;
-- `get_workbook_sheets(doc_id)`;
+- `SpreadsheetStore.get_workbook_sheets(doc_id)`;
 - `read_sheet_preview(csv_path, n_rows=50)`;
-- `find_rows(csv_path, query_terms, numeric_filters)`.
+- `find_rows(csv_path, query_terms)`;
+- CLI: `scripts/search_spreadsheets.py "Nickel 2012" --doc-id <doc_id> --top-k 5`.
+
+Для интерактивного ответа предпочтительный маршрут: обычный RAG находит
+релевантный `doc_id`/sheet preview, затем `search_spreadsheets.py --doc-id`
+читает только CSV этого workbook-а и возвращает выбранные строки. Глобальный
+поиск без `--doc-id` тоже работает, но сканирует все CSV-выгрузки.
 
 ## 9. Интеграция с metadata/graph
 
