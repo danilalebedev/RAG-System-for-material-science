@@ -1385,6 +1385,18 @@ def process_documents(
                         "raw_response_path": str(raw_path) if raw_path else None,
                         "fallback": "metadata_only_baseline",
                     }
+                elif raw_response and "{" in raw_response:
+                    bundle["publication"].setdefault("review_notes", []).append(
+                        "llm_parse_failed_triaged: metadata-only baseline retained; raw response saved"
+                    )
+                    bundle["llm"] = {
+                        "used": True,
+                        "status": "parse_failed_triaged",
+                        "error": str(exc)[:1000],
+                        "raw_response_path": str(raw_path) if raw_path else None,
+                        "raw_response_preview": compact_text(raw_response, 1000),
+                        "fallback": "metadata_only_baseline",
+                    }
                 else:
                     failed += 1
                     bundle["publication"].setdefault("review_notes", []).append(f"llm_error: {exc}")

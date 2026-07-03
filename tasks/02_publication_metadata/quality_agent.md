@@ -61,12 +61,17 @@ build_and_write_quality_report(Path("data/processed/publications"))
 
 `report["unknown_keys"]` не означает ошибку автоматически. Это список полей, которых нет в документированной схеме. Поля с большим count нужно либо добавить в схему явно, либо удалить из extractor output.
 
-`report["records"]` нужен для оценки надежности прогона. `failed_llm_records`, `partial_records`, `refusal_like_records` и `triaged_refusal_records` показывают, можно ли масштабировать extraction без накопления ручного долга.
+`report["records"]` нужен для оценки надежности прогона. `failed_llm_records`, `partial_records`, `refusal_like_records`, `triaged_refusal_records` и `triaged_parse_failed_records` показывают, можно ли масштабировать extraction без накопления ручного долга.
 
 `refused_triaged` означает, что модель отказалась обрабатывать документ, но
 пайплайн сохранил metadata-only baseline и пометил запись как `partial`. Это
 не считается hard failure, но такие документы нужно учитывать в ручном triage и
 не использовать как полноценные RECIPER-style summaries.
+
+`parse_failed_triaged` означает, что модель вернула JSON-похожий, но
+невалидный/оборванный ответ. Pipeline сохраняет metadata-only baseline и путь к
+raw response. Это не hard failure, но такой документ тоже не считается
+полноценной RECIPER-style extraction до ручного review или успешного retry.
 
 ## Gate criteria для массового прогона
 
@@ -84,6 +89,8 @@ build_and_write_quality_report(Path("data/processed/publications"))
 - `refusal_like_records == 0`.
 - `triaged_refusal_records` явно просмотрены на sample и приняты как
   metadata-only fallback для safety-sensitive документов.
+- `triaged_parse_failed_records` просмотрены на sample; если это массовый
+  паттерн, нужно уменьшать source package или max output complexity.
 
 Recommended gate:
 

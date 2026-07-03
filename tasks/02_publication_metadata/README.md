@@ -552,6 +552,9 @@ Optional shared helpers после согласования:
 - `refused_triaged` в quality report означает, что LLM отказалась от документа,
   но pipeline сохранил metadata-only baseline как `partial`; такие записи не
   являются hard failure, но не считаются полноценными RECIPER summaries.
+- `parse_failed_triaged` означает, что LLM вернула невалидный/оборванный JSON;
+  raw response сохранен, а baseline оставлен как `partial` metadata-only
+  fallback.
 
 ## Acceptance Criteria
 

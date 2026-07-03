@@ -612,6 +612,7 @@ def analyze_records(records_dir: Path, issues: IssueCollector) -> dict[str, Any]
         "failed_llm_records": 0,
         "refusal_like_records": 0,
         "triaged_refusal_records": 0,
+        "triaged_parse_failed_records": 0,
         "sample_failures": [],
     }
     if not records_dir.exists():
@@ -643,12 +644,18 @@ def analyze_records(records_dir: Path, issues: IssueCollector) -> dict[str, Any]
             stats["failed_llm_records"] += 1
         if status in {"refused_triaged", "refusal_triaged"}:
             stats["triaged_refusal_records"] += 1
+        if status in {"parse_failed_triaged", "malformed_json_triaged"}:
+            stats["triaged_parse_failed_records"] += 1
         failure_text = " ".join(
             compact_text(llm.get(key), 1000) for key in ("status", "error", "raw_response_preview") if llm.get(key)
         )
         if status not in {"refused_triaged", "refusal_triaged"} and REFUSAL_RE.search(failure_text):
             stats["refusal_like_records"] += 1
-        if (pub_status != "ok" or status not in {"ok", "ok_repaired", "not_requested"}) and len(sample_failures) < 20:
+        if (
+            pub_status != "ok"
+            or status
+            not in {"ok", "ok_repaired", "not_requested", "refused_triaged", "refusal_triaged", "parse_failed_triaged", "malformed_json_triaged"}
+        ) and len(sample_failures) < 20:
             sample_failures.append(
                 {
                     "record": path.name,
