@@ -45,6 +45,7 @@ py -3.12 -m venv .venv
 - `data/parsed/` - JSONL с документами, chunks и таблицами, не коммитится.
 - `data/parsed/full_texts/` - полный извлеченный текст по каждому документу, не коммитится.
 - `data/parsed/spreadsheets_csv/` - полные листы Excel, выгруженные в CSV, не коммитятся.
+- Распарсенные данные на Яндекс.Диске: https://disk.yandex.ru/d/LmU3jske9NQlOA
 - `reports/parsing/` - отчеты о покрытии и качестве парсинга, не коммитится.
 - `docs/parsing_data_layout.md` - коммитимая инструкция по локальным parsing-артефактам и текущему качеству.
 - `docs/data_sharing.md` - как передавать parsed-артефакты между разработчиками без git.
