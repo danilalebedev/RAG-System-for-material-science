@@ -128,8 +128,31 @@ cache/resume и лимиты нагрузки.
 - `data/processed/publications/procedure_summaries.jsonl`
 - `data/processed/publications/publication_metadata_report.json`
 - `data/processed/publications/publication_metadata_manifest.json`
+- `data/processed/publications/publication_quality_report.json` при запуске
+  CLI с `--quality-report`
 
 Все `data/processed/*` ignored и не коммитятся.
+
+## Multilingual Policy
+
+Корпус может быть русским, английским или смешанным. Для этого этапа не нужно
+переводить все документы на один язык:
+
+- исходные `title`, `abstract`, `summary`, `evidence_quotes`, названия
+  материалов, процессов, оборудования, организаций и географии сохраняем на
+  языке источника;
+- поле `language` фиксирует `ru`, `en`, `mixed` или `unknown`;
+- для будущего RAG достаточно использовать multilingual embedding model, чтобы
+  русские и английские chunks попадали в общее семантическое пространство;
+- normalization/graph layer должен хранить aliases, например `nickel matte` и
+  `никелевый штейн`, а не заменять оригинальный evidence;
+- перевод допустим только как вспомогательный слой для query expansion,
+  bilingual aliases и финального ответа пользователю;
+- финальный GUI/RAG ответ формируется на языке вопроса, но provenance показывает
+  оригинальные цитаты.
+
+Это сохраняет проверяемость: любой извлеченный факт можно сопоставить с
+оригинальным `source_span_id`, не теряя терминологию из публикации.
 
 ## Core Types
 
@@ -186,6 +209,7 @@ cache/resume и лимиты нагрузки.
 Enum:
 
 - `journal_article`
+- `journal_issue`
 - `conference_paper`
 - `conference_abstract`
 - `review_article`
@@ -199,7 +223,8 @@ Enum:
 
 Mapping baseline:
 
-- `source_type=Журналы` -> чаще `journal_article`, но проверять по header.
+- `source_type=Журналы` -> `journal_issue` для полных выпусков и
+  `journal_article` для отдельных статей; проверять по header/page count.
 - `source_type=Материалы конференций` -> `conference_paper` или
   `conference_abstract`; Excel в этой категории -> `spreadsheet_dataset`.
 - `source_type=Обзоры` -> `review_article` или `technical_report`.
@@ -504,10 +529,17 @@ Optional shared helpers после согласования:
 .\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --limit 100 --output-dir data\processed\publications
 ```
 
+С quality gate:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --output-dir data\processed\publications --aggregate-only --quality-report
+```
+
 Ожидаемые проверки:
 
 - создан `publications.jsonl`;
 - созданы `document_summaries.jsonl` и `procedure_summaries.jsonl`;
+- при `--quality-report` создан `publication_quality_report.json`;
 - ровно одна publication record на входной `doc_id`;
 - одна document summary на входной `doc_id`;
 - `procedure_summaries.jsonl` допускает 0..N procedures на документ;
@@ -515,6 +547,8 @@ Optional shared helpers после согласования:
 - technical titles вроде `Презентация PowerPoint` не считаются high-confidence
   title без evidence из текста;
 - report показывает coverage по source_type, missing fields и procedure counts.
+- quality report показывает `gate.mass_run_ready`; перед массовым прогоном он
+  должен быть `true` или команда должна явно принять listed blockers.
 
 ## Acceptance Criteria
 

@@ -1,0 +1,17 @@
+{
+  "model_uri_template": "gpt://{folder_id}/yandexgpt-5.1/latest",
+  "fallback_model_uri_template": "gpt://{folder_id}/yandexgpt-lite/latest",
+  "completion_endpoint": "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+  "temperature": 0.1,
+  "max_tokens": 6500,
+  "request_timeout_seconds": 120,
+  "max_retries": 4,
+  "retry_backoff_seconds": 4.0,
+  "sleep_seconds": 0.3,
+  "max_header_chars": 12000,
+  "max_chunk_chars": 2600,
+  "max_table_chars": 2200,
+  "top_chunk_count": 7,
+  "top_table_count": 3,
+  "source_package_max_chars": 30000
+}
