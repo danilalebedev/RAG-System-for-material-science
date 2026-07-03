@@ -134,6 +134,9 @@ graph outputs и parsed sources.
 - первый экран показывает пользовательский запрос, переформулированный поисковый запрос, ключевые слова и editable slots:
   материал, процесс, условия, числовые ограничения, география, период, свойства, оборудование и варианты
   поисковых запросов;
+- основной поток GUI начинается с `R&D question`: пользователь сначала видит Query Decomposer, правит slots,
+  выбирает `Quick search` или `Deep analysis`, нажимает `Decompose query`, правит slots и только после этого
+  запускает поиск;
 - sidebar содержит готовые demo scenarios, session presets и structured filters по географии/периоду;
 - вкладка `Cockpit` показывает Local vs World Dashboard, coverage signals, Knowledge Gap Radar, evidence cards
   и краткий управленческий вывод;

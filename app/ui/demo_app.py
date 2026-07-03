@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -15,6 +16,8 @@ if str(ROOT) not in sys.path:
 
 from app.query.cockpit import (  # noqa: E402
     DEMO_SCENARIOS,
+    SEARCH_QUERY_SLOT_ORDER,
+    build_search_query_from_slots,
     consensus_panel_rows,
     executive_brief_markdown,
     evidence_cards,
@@ -30,6 +33,7 @@ from app.query.cockpit import (  # noqa: E402
 )
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
+from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
 
 
@@ -172,6 +176,47 @@ def render_query_decomposer(run: Any) -> None:
                 key=f"query_slot_{run_key}_{index}",
                 help=row.get("why", ""),
             )
+
+
+def query_preview_run(query: str, *, materials_only: bool) -> Any:
+    plan = deterministic_query_rewrite(query, materials_only=materials_only)
+    return SimpleNamespace(
+        request=SimpleNamespace(query=query),
+        query_plan=plan.model_dump(mode="json"),
+        keywords=plan.all_keywords,
+        results=[],
+        local_matches=[],
+        deep_results=[],
+        comparison=None,
+        warnings=[],
+        output_dir=None,
+    )
+
+
+def render_pre_search_decomposer(query: str, *, materials_only: bool) -> dict[str, str]:
+    preview = query_preview_run(query, materials_only=materials_only)
+    rows = query_decomposition(preview)
+    st.subheader("Query Decomposer")
+    st.caption("Отредактируйте структуру запроса до запуска поиска. Эти поля добавятся к поисковой формулировке для web-search и будущего RAG.")
+    slot_values: dict[str, str] = {}
+    cols = st.columns(2)
+    for index, row in enumerate(rows):
+        slot = row["slot"]
+        if slot not in SEARCH_QUERY_SLOT_ORDER:
+            continue
+        with cols[index % 2]:
+            slot_values[slot] = st.text_input(
+                slot,
+                value=", ".join(row.get("values") or []),
+                key=f"pre_search_slot_{slot}",
+                help=row.get("why", ""),
+            )
+    with st.expander("Варианты поискового запроса", expanded=False):
+        for row in rows:
+            if row["slot"] == "Варианты поискового запроса":
+                for value in row.get("values") or []:
+                    st.write(f"- {value}")
+    return slot_values
 
 
 def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) -> None:
@@ -493,7 +538,8 @@ def main() -> None:
         if "arxiv" in source_options:
             st.caption("arXiv может отвечать медленнее остальных источников.")
         top_k = st.slider("Top K", min_value=5, max_value=50, value=20, step=5)
-        deep_search = st.checkbox("Deep search", value=False)
+        analysis_mode = st.radio("Analysis mode", options=["Quick search", "Deep analysis"], index=0)
+        deep_search = analysis_mode == "Deep analysis"
         max_deep = max(1, min(top_k, 20))
         deep_search_limit = st.slider(
             "Статей для Deep Search",
@@ -517,11 +563,34 @@ def main() -> None:
     if "history" not in st.session_state:
         st.session_state["history"] = []
 
+    queued_query = st.session_state.pop("queued_query", None)
+    if queued_query:
+        st.session_state["rd_question"] = queued_query
+
+    st.subheader("R&D Decision Cockpit")
+    rd_question = st.text_area(
+        "R&D question",
+        key="rd_question",
+        height=90,
+        placeholder="Например: никелевая руда, кучное выщелачивание, холодный климат, извлечение Ni, 2020-2026",
+    )
+    pre_search_slots: dict[str, str] = {}
+    if rd_question:
+        pre_search_slots = render_pre_search_decomposer(rd_question, materials_only=materials_only)
+    col1, col2, col3 = st.columns([1, 1, 3])
+    with col1:
+        st.button("Decompose query")
+    with col2:
+        run_from_cockpit = st.button("Run search", type="primary")
+    with col3:
+        st.caption(f"Mode: {analysis_mode}. Отредактированные slots попадут в поисковую формулировку.")
+
     render_history()
 
     query = st.chat_input("Спросите про материал, процесс, режим или свойство")
-    queued_query = st.session_state.pop("queued_query", None)
-    active_query = query or queued_query
+    active_query = rd_question if run_from_cockpit else query
+    if run_from_cockpit and not active_query:
+        st.warning("Введите R&D question перед запуском поиска.")
     if active_query:
         st.session_state["history"].append({"role": "user", "content": active_query})
         with st.chat_message("user"):
@@ -531,7 +600,12 @@ def main() -> None:
             filter_parts.append(f"география: {geography_filter}")
         if year_range != (2000, 2026):
             filter_parts.append(f"период публикаций: {year_range[0]}-{year_range[1]}")
-        search_query = " ".join([active_query, *filter_parts]).strip()
+        slot_values = dict(pre_search_slots) if run_from_cockpit else {}
+        if geography_filter:
+            slot_values["География"] = ", ".join(filter(None, [slot_values.get("География"), geography_filter]))
+        if year_range != (2000, 2026):
+            slot_values["Период"] = ", ".join(filter(None, [slot_values.get("Период"), f"{year_range[0]}-{year_range[1]}"]))
+        search_query = build_search_query_from_slots(active_query, slot_values)
 
         request = LiteratureSearchRequest(
             query=search_query,
@@ -554,8 +628,8 @@ def main() -> None:
             with st.spinner("Выполняю поиск..."):
                 run = run_literature_search(request)
             answer = f"Найдено внешних источников: {len(run.results)}; локальных совпадений: {len(run.local_matches)}."
-            if filter_parts:
-                st.caption(f"Фильтры применены к поисковой формулировке: {', '.join(filter_parts)}")
+            if filter_parts or any(slot_values.values()):
+                st.caption(f"Поисковая формулировка после slots: {search_query}")
             st.write(answer)
         st.session_state["history"].append({"role": "assistant", "content": answer})
         render_run(run)

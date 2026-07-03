@@ -17,6 +17,7 @@ from app.web_search.deep_search import run_deep_search
 from app.web_search.fetch import is_safe_external_url
 from app.web_search.keywords import extract_keywords
 from app.query.cockpit import (
+    build_search_query_from_slots,
     consensus_panel_rows,
     executive_brief_markdown,
     evidence_cards,
@@ -556,6 +557,26 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     assert "3 пробела" in brief
     assert "Nickel alloy annealing hardness" in brief
     assert "https://example.org/paper" in brief
+
+
+def test_build_search_query_from_edited_slots() -> None:
+    query = build_search_query_from_slots(
+        "кучное выщелачивание никелевой руды",
+        {
+            "Материал": "никелевая руда",
+            "Процесс": "кучное выщелачивание",
+            "Условия": "холодный климат",
+            "Числовые ограничения": "5 C",
+            "География": "Норильск",
+            "Период": "2020-2026",
+            "Свойства": "извлечение Ni",
+            "Оборудование": "реактор",
+        },
+    )
+    assert "Материал: никелевая руда" in query
+    assert "Числовые ограничения: 5 C" in query
+    assert "Период: 2020-2026" in query
+    assert "Оборудование: реактор" in query
 
 
 def test_pdf_report_is_generated(tmp_path: Path) -> None:

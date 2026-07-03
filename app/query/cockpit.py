@@ -146,6 +146,17 @@ DEMO_SCENARIOS: list[dict[str, str]] = [
     },
 ]
 
+SEARCH_QUERY_SLOT_ORDER = [
+    "Материал",
+    "Процесс",
+    "Условия",
+    "Числовые ограничения",
+    "География",
+    "Период",
+    "Свойства",
+    "Оборудование",
+]
+
 
 def compact_text(value: Any, max_chars: int | None = None) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
@@ -194,6 +205,20 @@ def result_link(result: Any) -> str:
     if getattr(result, "doi", None):
         return f"https://doi.org/{result.doi}"
     return ""
+
+
+def build_search_query_from_slots(
+    base_query: str,
+    slot_values: dict[str, str],
+    *,
+    max_chars: int = 1000,
+) -> str:
+    parts = [compact_text(base_query, 500)]
+    for slot in SEARCH_QUERY_SLOT_ORDER:
+        value = compact_text(slot_values.get(slot), 220)
+        if value:
+            parts.append(f"{slot}: {value}")
+    return compact_text(" ".join(part for part in parts if part), max_chars)
 
 
 def keyword_matches(keywords: list[str], hints: tuple[str, ...]) -> list[str]:
