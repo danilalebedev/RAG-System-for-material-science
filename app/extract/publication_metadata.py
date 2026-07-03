@@ -1254,6 +1254,8 @@ def merge_llm_bundle(baseline: dict[str, Any], llm_data: dict[str, Any]) -> dict
             evidence_spans.append(span)
             procedure["source_span_ids"].append(span["source_span_id"])
             procedure["evidence"].append({"source_span_id": span["source_span_id"]})
+        if not procedure["evidence"]:
+            continue
         procedures.append(procedure)
 
     merged["authors"] = authors
@@ -1300,7 +1302,12 @@ def aggregate_records(records_dir: Path, output_dir: Path) -> dict[str, int]:
     venues = [row for bundle in bundles for row in bundle.get("venues", [])]
     evidence = [row for bundle in bundles for row in bundle.get("evidence_spans", [])]
     document_summaries = [bundle["document_summary"] for bundle in bundles if bundle.get("document_summary")]
-    procedure_summaries = [row for bundle in bundles for row in bundle.get("procedure_summaries", [])]
+    procedure_summaries = [
+        row
+        for bundle in bundles
+        for row in bundle.get("procedure_summaries", [])
+        if row.get("evidence") or row.get("source_span_ids")
+    ]
 
     counts = {
         "records": len(bundles),
