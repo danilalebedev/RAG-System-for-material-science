@@ -127,6 +127,20 @@ graph outputs и parsed sources.
   local-only/web-only методики и отличающиеся условия.
 - Generated artifacts пишутся в `data/processed/web_search/<run_id>/`.
 
+## Demo Cockpit Additions
+
+Поверх literature-search слоя добавлен демонстрационный cockpit, рассчитанный на проверку решения через GUI:
+
+- первый экран показывает пользовательский запрос, переформулированный поисковый запрос, ключевые слова и editable slots:
+  материалы, процессы, свойства, условия/числа, география/период и варианты поисковых запросов;
+- sidebar содержит готовые demo scenarios для быстрого показа разных задач без ручного набора запроса;
+- вкладка `Cockpit` показывает local-vs-web coverage, gap radar и краткий управленческий вывод;
+- вкладка `Сравнение` показывает method comparison matrix и сводку `материал x методика` после Deep Search;
+- `full_run.json` теперь включает cockpit payload: query decomposition, coverage metrics, method matrix, gap radar
+  и executive brief markdown;
+- каждый run сохраняет отдельный `executive_brief.md`, `executive_brief.docx` и, если включена PDF-генерация,
+  `executive_brief.pdf`.
+
 Security constraints:
 
 - нет generic crawler;

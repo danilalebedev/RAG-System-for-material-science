@@ -72,6 +72,7 @@ def main() -> int:
         "docx_report": str(run.report_docx_path) if run.report_docx_path else None,
         "links_report": str(run.links_report_docx_path) if run.links_report_docx_path else None,
         "deep_report": str(run.deep_report_docx_path) if run.deep_report_docx_path else None,
+        "executive_brief": str(run.executive_brief_docx_path) if run.executive_brief_docx_path else None,
         "full_run_json": str(run.full_run_json_path) if run.full_run_json_path else None,
         "warnings": run.warnings,
     }
@@ -89,6 +90,8 @@ def main() -> int:
             print(f"PDF report: {run.report_pdf_path}")
         if run.report_docx_path:
             print(f"DOCX report: {run.report_docx_path}")
+        if run.executive_brief_docx_path:
+            print(f"Executive brief DOCX: {run.executive_brief_docx_path}")
         for warning in run.warnings:
             print(f"Warning: {warning}")
         for index, result in enumerate(run.results[: min(args.top_k, 10)], start=1):

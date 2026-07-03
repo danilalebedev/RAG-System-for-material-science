@@ -13,6 +13,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.query.cockpit import (  # noqa: E402
+    DEMO_SCENARIOS,
+    executive_brief_markdown,
+    gap_radar_rows,
+    local_vs_web_metrics,
+    method_heatmap_rows,
+    method_matrix_rows,
+    query_decomposition,
+)
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
@@ -115,6 +124,70 @@ def render_warnings(warnings: list[str]) -> None:
             st.warning(warning)
 
 
+def render_query_decomposer(run: Any) -> None:
+    st.subheader("Разбор запроса")
+    run_key = str(run.output_dir or run.request.query)[-80:]
+    rows = query_decomposition(run)
+    cols = st.columns(2)
+    for index, row in enumerate(rows):
+        with cols[index % 2]:
+            st.text_input(
+                row["slot"],
+                value=", ".join(row.get("values") or []),
+                key=f"query_slot_{run_key}_{index}",
+                help=row.get("why", ""),
+            )
+
+
+def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) -> None:
+    st.subheader("Поиск выполнен")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Внешние статьи", len(run.results))
+    col2.metric("Локальные совпадения", len(run.local_matches))
+    col3.metric("Deep Search summaries", len(run.deep_results))
+    col4.metric("Методики", len(run.comparison.rows) if run.comparison else 0)
+    st.markdown(f"**Запрос пользователя:** {run.request.query}")
+    st.markdown(f"**Поисковая формулировка:** {corrected_query}")
+    st.markdown(f"**Ключевые слова:** {', '.join(run.keywords) if run.keywords else 'n/a'}")
+
+    render_query_decomposer(run)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Local vs web coverage")
+        render_table(local_vs_web_metrics(run))
+    with col2:
+        st.subheader("Gap radar")
+        render_table(gap_radar_rows(run))
+
+    heatmap = method_heatmap_rows(run)
+    if heatmap:
+        st.subheader("Материалы x методики")
+        render_table(heatmap, empty_text="Матрица методик появится после Deep Search.")
+
+    if search_queries:
+        with st.expander("Варианты запроса для поиска"):
+            for item in search_queries:
+                st.write(f"- {item}")
+    with st.expander("Краткий управленческий вывод"):
+        st.markdown(executive_brief_markdown(run))
+    with st.expander("Как ранжируются статьи"):
+        st.markdown(
+            "- результаты выбранных API-баз объединяются и дедуплицируются по DOI или нормализованному title;\n"
+            "- score растет за совпадения ключевых слов в title/abstract/venue;\n"
+            "- добавляется бонус за abstract, DOI, citations и свежий год;\n"
+            "- score также растет за квартиль журнала, если он известен: Q1 +5, Q2 +3, Q3 +1.5, Q4 +0.5;\n"
+            "- при `Materials science only` остаются только статьи с domain-сигналами: materials, metallurgy, alloy, ore, nickel, copper, flotation, leaching и т.п."
+        )
+    with st.expander("Технический JSON rewrite plan"):
+        st.json(run.query_plan or {})
+    render_warnings(run.warnings)
+    if run.comparison and run.comparison.gaps:
+        st.write("Gaps")
+        for gap in run.comparison.gaps:
+            st.write(f"- {gap}")
+
+
 def download_path_button(label: str, path: Any, *, file_name: str, mime: str) -> None:
     if path and Path(path).exists():
         st.download_button(label, data=Path(path).read_bytes(), file_name=file_name, mime=mime)
@@ -122,38 +195,12 @@ def download_path_button(label: str, path: Any, *, file_name: str, mime: str) ->
 
 def render_run(run: Any) -> None:
     st.session_state["last_run"] = run
-    tabs = st.tabs(["Ответ", "Публикации", "Deep Search", "Сравнение", "Evidence", "Графики", "Отчет"])
+    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Графики", "Отчет"])
     corrected_query = run.query_plan.get("corrected_query") if run.query_plan else run.request.query
     search_queries = (run.query_plan or {}).get("search_queries") or []
 
     with tabs[0]:
-        st.subheader("Поиск выполнен")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Внешние статьи", len(run.results))
-        col2.metric("Локальные совпадения", len(run.local_matches))
-        col3.metric("Deep Search summaries", len(run.deep_results))
-        st.markdown(f"**Переформулированный запрос:** {corrected_query}")
-        st.markdown(f"**Ключевые слова:** {', '.join(run.keywords) if run.keywords else 'n/a'}")
-        if search_queries:
-            with st.expander("Варианты запроса для поиска"):
-                for item in search_queries:
-                    st.write(f"- {item}")
-        if run.query_plan:
-            with st.expander("Технический JSON rewrite plan"):
-                st.json(run.query_plan)
-        with st.expander("Как ранжируются статьи"):
-            st.markdown(
-                "- результаты выбранных API-баз объединяются и дедуплицируются по DOI или нормализованному title;\n"
-                "- score растет за совпадения ключевых слов в title/abstract/venue;\n"
-                "- добавляется бонус за abstract, DOI, citations и свежий год;\n"
-                "- score также растет за квартиль журнала, если он известен: Q1 +5, Q2 +3, Q3 +1.5, Q4 +0.5;\n"
-                "- при `Materials science only` остаются только статьи с domain-сигналами: materials, metallurgy, alloy, ore, nickel, copper, flotation, leaching и т.п."
-            )
-        render_warnings(run.warnings)
-        if run.comparison and run.comparison.gaps:
-            st.write("Gaps")
-            for gap in run.comparison.gaps:
-                st.write(f"- {gap}")
+        render_cockpit(run, corrected_query, search_queries)
 
     with tabs[1]:
         rows = result_rows(run)
@@ -208,6 +255,12 @@ def render_run(run: Any) -> None:
                         st.warning("LLM credentials не найдены, поэтому сохранен metadata-only fallback summary.")
 
     with tabs[3]:
+        st.subheader("Method comparison matrix")
+        render_table(method_matrix_rows(run), empty_text="Матрица методик появится после Deep Search.")
+        heatmap = method_heatmap_rows(run)
+        if heatmap:
+            st.subheader("Материалы x методики")
+            render_table(heatmap)
         col1, col2 = st.columns(2)
         with col1:
             st.write("Confirmed")
@@ -239,8 +292,34 @@ def render_run(run: Any) -> None:
                 ]
             ).set_index("bucket")
             st.bar_chart(coverage)
+        radar = pd.DataFrame(gap_radar_rows(run))
+        if not radar.empty:
+            numeric_radar = radar.copy()
+            numeric_radar["value"] = pd.to_numeric(numeric_radar["value"], errors="coerce").fillna(0)
+            st.write("Gap radar")
+            st.bar_chart(numeric_radar.set_index("signal")["value"])
 
     with tabs[6]:
+        st.subheader("Краткий управленческий вывод")
+        st.markdown(run.executive_brief_markdown or executive_brief_markdown(run))
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button(
+                "Markdown brief",
+                data=run.executive_brief_markdown or executive_brief_markdown(run),
+                file_name="executive_brief.md",
+                mime="text/markdown",
+            )
+        with col2:
+            download_path_button("PDF brief", run.executive_brief_pdf_path, file_name="executive_brief.pdf", mime="application/pdf")
+        with col3:
+            download_path_button(
+                "DOCX brief",
+                run.executive_brief_docx_path,
+                file_name="executive_brief.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
         st.subheader("Полный отчет")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -322,6 +401,14 @@ def main() -> None:
     st.title("Поиск научных публикаций")
 
     with st.sidebar:
+        scenario_options = ["Свободный запрос"] + [item["label"] for item in DEMO_SCENARIOS]
+        scenario_label = st.selectbox("Demo scenario", options=scenario_options, index=0)
+        selected_scenario = next((item for item in DEMO_SCENARIOS if item["label"] == scenario_label), None)
+        if selected_scenario:
+            st.caption(selected_scenario["focus"])
+            if st.button("Запустить сценарий", type="primary"):
+                st.session_state["queued_query"] = selected_scenario["query"]
+                st.rerun()
         local_search = st.checkbox("Локальный поиск", value=True)
         web_search = st.checkbox("Внешний поиск публикаций", value=True)
         source_options = st.multiselect(
@@ -362,13 +449,15 @@ def main() -> None:
     render_history()
 
     query = st.chat_input("Спросите про материал, процесс, режим или свойство")
-    if query:
-        st.session_state["history"].append({"role": "user", "content": query})
+    queued_query = st.session_state.pop("queued_query", None)
+    active_query = query or queued_query
+    if active_query:
+        st.session_state["history"].append({"role": "user", "content": active_query})
         with st.chat_message("user"):
-            st.write(query)
+            st.write(active_query)
 
         request = LiteratureSearchRequest(
-            query=query,
+            query=active_query,
             top_k=top_k,
             sources=source_options if web_search else [],
             deep_search="top5" if deep_search else "none",

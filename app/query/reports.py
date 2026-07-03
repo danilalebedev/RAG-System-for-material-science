@@ -16,6 +16,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.query import cockpit
+
 
 def compact_text(value: Any, max_chars: int | None = None) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
@@ -218,6 +220,10 @@ def build_deep_report(run: Any) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def build_executive_brief_report(run: Any) -> str:
+    return cockpit.executive_brief_markdown(run)
+
+
 def build_literature_report(run: Any) -> str:
     lines = [
         "# Полный отчет по поиску литературы",
@@ -233,6 +239,17 @@ def build_literature_report(run: Any) -> str:
         "",
         run_overall_summary(run),
     ]
+    lines.extend(["", "## Демо cockpit", "", "### Разбор запроса"])
+    for row in cockpit.query_decomposition(run):
+        values = ", ".join(row.get("values") or []) or "n/a"
+        lines.append(f"- {row['slot']}: {values}")
+    lines.extend(["", "### Local vs web coverage"])
+    for row in cockpit.local_vs_web_metrics(run):
+        lines.append(f"- {row['metric']}: local={row['local']}, web={row['web']} - {row['interpretation']}")
+    lines.extend(["", "### Gap radar"])
+    for row in cockpit.gap_radar_rows(run):
+        lines.append(f"- {row['signal']}: {row['value']} ({row['level']}) - {row['recommendation']}")
+
     insights = comparison_insights(run)
     if insights:
         lines.extend(["", "## Выводы по сравнению локального и web-поиска", "", insights])
@@ -283,6 +300,14 @@ def build_full_run_payload(run: Any) -> dict[str, Any]:
                 {"bucket": "local", "count": len(run.local_matches)},
                 {"bucket": "web", "count": len(run.results)},
             ],
+        },
+        "cockpit": {
+            "query_decomposition": cockpit.query_decomposition(run),
+            "local_vs_web_metrics": cockpit.local_vs_web_metrics(run),
+            "method_matrix": cockpit.method_matrix_rows(run),
+            "method_heatmap": cockpit.method_heatmap_rows(run),
+            "gap_radar": cockpit.gap_radar_rows(run),
+            "executive_brief_markdown": cockpit.executive_brief_markdown(run),
         },
         "comparison_insights": comparison_insights(run),
         "warnings": run.warnings,
@@ -351,10 +376,21 @@ def build_pdf_report(run: Any, output_path: Path, *, mode: str = "full") -> Path
         "full": "Полный отчет по поиску литературы",
         "links": "Отчет по релевантным ссылкам",
         "deep": "Deep Search отчет",
+        "brief": "Краткий управленческий вывод",
     }.get(mode, "Отчет по поиску литературы")
     story.append(paragraph(title, styles["TitleUnicode"]))
     story.append(paragraph(f"Запрос: {run.request.query}", styles["BodyUnicode"]))
     story.append(paragraph(f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}", styles["BodyUnicode"]))
+
+    if mode == "brief":
+        brief_text = re.sub(r"^# .+\n\n?", "", cockpit.executive_brief_markdown(run), count=1)
+        story.append(Spacer(1, 0.25 * cm))
+        story.append(paragraph(brief_text, styles["BodyUnicode"]))
+        if run.results:
+            add_sources_table(story, run, styles)
+        doc = SimpleDocTemplate(str(output_path), pagesize=A4, rightMargin=1.2 * cm, leftMargin=1.2 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm)
+        doc.build(story)
+        return output_path
 
     if mode in {"full", "deep"}:
         story.append(paragraph("Общий вывод", styles["HeadingUnicode"]))
@@ -399,6 +435,23 @@ def add_docx_table(document: Document, headers: list[str], rows: list[list[str]]
             cells[index].text = compact_text(value, 1200)
 
 
+def add_markdownish_docx(document: Document, text: str) -> None:
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            document.add_heading(line[3:], level=2)
+        elif line.startswith("# "):
+            document.add_heading(line[2:], level=1)
+        elif line.startswith("- "):
+            document.add_paragraph(line[2:], style="List Bullet")
+        elif re.match(r"^\d+\.\s", line):
+            document.add_paragraph(line, style="List Number")
+        else:
+            document.add_paragraph(line)
+
+
 def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
@@ -408,11 +461,25 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
             "full": "Полный отчет по поиску литературы",
             "links": "Отчет по релевантным ссылкам",
             "deep": "Deep Search отчет",
+            "brief": "Краткий управленческий вывод",
         }.get(mode, "Отчет по поиску литературы"),
         level=1,
     )
     document.add_paragraph(f"Запрос: {run.request.query}")
     document.add_paragraph(f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}")
+
+    if mode == "brief":
+        brief_text = re.sub(r"^# .+\n\n?", "", cockpit.executive_brief_markdown(run), count=1)
+        add_markdownish_docx(document, brief_text)
+        if run.results:
+            document.add_heading("Релевантные ссылки", level=2)
+            add_docx_table(
+                document,
+                ["#", "Заголовок", "Ссылка"],
+                [[str(index), result.title, result_link(result)] for index, result in enumerate(run.results[:30], start=1)],
+            )
+        document.save(output_path)
+        return output_path
 
     if mode in {"full", "deep"}:
         document.add_heading("Общий вывод", level=2)

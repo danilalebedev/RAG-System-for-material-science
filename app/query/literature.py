@@ -55,23 +55,28 @@ def write_run_outputs(run: LiteratureSearchRun, output_dir: Path) -> LiteratureS
     report = report_builders.build_literature_report(run)
     links_report = report_builders.build_links_report(run)
     deep_report = report_builders.build_deep_report(run)
+    executive_brief = report_builders.build_executive_brief_report(run)
     report_builders.write_text_report(output_dir / "literature_report.md", report)
     report_builders.write_text_report(output_dir / "literature_links_report.md", links_report)
     report_builders.write_text_report(output_dir / "deep_search_report.md", deep_report)
+    report_builders.write_text_report(output_dir / "executive_brief.md", executive_brief)
     report_builders.write_json_report(output_dir / "full_run.json", report_builders.build_full_run_payload(run))
 
     run.output_dir = output_dir
     run.report_markdown = report
     run.links_report_markdown = links_report
     run.deep_report_markdown = deep_report
+    run.executive_brief_markdown = executive_brief
     run.full_run_json_path = output_dir / "full_run.json"
     if run.request.generate_pdf_report:
         run.report_pdf_path = report_builders.build_pdf_report(run, output_dir / "literature_report.pdf", mode="full")
         run.links_report_pdf_path = report_builders.build_pdf_report(run, output_dir / "literature_links_report.pdf", mode="links")
         run.deep_report_pdf_path = report_builders.build_pdf_report(run, output_dir / "deep_search_report.pdf", mode="deep")
+        run.executive_brief_pdf_path = report_builders.build_pdf_report(run, output_dir / "executive_brief.pdf", mode="brief")
     run.report_docx_path = report_builders.build_docx_report(run, output_dir / "literature_report.docx", mode="full")
     run.links_report_docx_path = report_builders.build_docx_report(run, output_dir / "literature_links_report.docx", mode="links")
     run.deep_report_docx_path = report_builders.build_docx_report(run, output_dir / "deep_search_report.docx", mode="deep")
+    run.executive_brief_docx_path = report_builders.build_docx_report(run, output_dir / "executive_brief.docx", mode="brief")
     return run
 
 

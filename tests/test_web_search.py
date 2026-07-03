@@ -16,11 +16,27 @@ from app.web_search.comparison import compare_methods
 from app.web_search.deep_search import run_deep_search
 from app.web_search.fetch import is_safe_external_url
 from app.web_search.keywords import extract_keywords
-from app.query.reports import build_deep_report, build_docx_report, build_links_report, build_pdf_report, comparison_insights, run_overall_summary
+from app.query.cockpit import (
+    executive_brief_markdown,
+    gap_radar_rows,
+    local_vs_web_metrics,
+    method_heatmap_rows,
+    method_matrix_rows,
+    query_decomposition,
+)
+from app.query.reports import (
+    build_deep_report,
+    build_docx_report,
+    build_executive_brief_report,
+    build_links_report,
+    build_pdf_report,
+    comparison_insights,
+    run_overall_summary,
+)
 from app.query.rewrite import deterministic_query_rewrite
 from app.ui.demo_app import table_df
 from app.web_search.resource_links import build_resource_links
-from app.web_search.schemas import DeepSearchResult, LiteratureSearchRequest, LiteratureSearchResult, LiteratureSearchRun
+from app.web_search.schemas import DeepSearchResult, LiteratureSearchRequest, LiteratureSearchResult, LiteratureSearchRun, MethodComparison
 
 
 def test_extract_keywords_ru_en_domain_terms() -> None:
@@ -456,6 +472,57 @@ def test_compare_methods_finds_shared_and_unique_methods() -> None:
     assert comparison.differing_conditions
 
 
+def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
+    source = LiteratureSearchResult(
+        result_id="web_1",
+        source="openalex",
+        title="Nickel alloy annealing hardness",
+        year=2024,
+        doi="10.1000/nickel",
+        url="https://example.org/paper",
+    )
+    comparison = MethodComparison(
+        query="nickel alloy annealing 900 C",
+        confirmed_methods=[{"material": "nickel alloy", "method": "annealing"}],
+        local_only_methods=[{"scope": "local", "material": "copper ore", "method": "flotation"}],
+        web_only_methods=[{"scope": "web", "material": "cobalt alloy", "method": "aging"}],
+        differing_conditions=[{"material": "nickel alloy", "method": "annealing"}],
+        rows=[
+            {"scope": "local", "title": "Local nickel work", "material": "nickel alloy", "method": "annealing", "conditions": [{"temperature": "900 C"}]},
+            {"scope": "web", "title": "Nickel alloy annealing hardness", "material": "nickel alloy", "method": "annealing", "conditions": [{"temperature": "950 C"}]},
+        ],
+    )
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="nickel alloy annealing 900 C Norilsk", deep_search="top5", deep_search_limit=3),
+        query_plan={
+            "corrected_query": "nickel alloy annealing hardness",
+            "material_terms": ["nickel alloy"],
+            "process_terms": ["annealing"],
+            "property_terms": ["hardness"],
+            "search_queries": ["nickel alloy annealing materials science"],
+        },
+        keywords=["nickel", "alloy", "annealing", "hardness", "Norilsk"],
+        results=[source],
+        local_matches=[{"title": "Local nickel work"}],
+        deep_results=[DeepSearchResult(result_id="web_1", source_result=source, document_summary={"summary": "Annealing changes hardness."})],
+        comparison=comparison,
+    )
+
+    slots = query_decomposition(run)
+    assert any(row["slot"] == "Материалы" and "nickel alloy" in row["values"] for row in slots)
+    assert any("900 C" in row["values"] for row in slots)
+    metrics = local_vs_web_metrics(run)
+    assert metrics[0]["local"] == 1
+    assert metrics[0]["web"] == 1
+    assert method_matrix_rows(run)[0]["scope"] == "Локальная БД"
+    assert method_heatmap_rows(run)[0]["status"] == "есть локально и во внешней литературе"
+    assert any(row["signal"] == "Разные условия/диапазоны" and row["value"] == 1 for row in gap_radar_rows(run))
+    brief = executive_brief_markdown(run)
+    assert "Краткий управленческий вывод" in brief
+    assert "Nickel alloy annealing hardness" in brief
+    assert "https://example.org/paper" in brief
+
+
 def test_pdf_report_is_generated(tmp_path: Path) -> None:
     result = LiteratureSearchResult(
         result_id="crossref_pdf",
@@ -507,10 +574,19 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
     assert "https://example.org/paper" in links
     assert "Deep Search отчет" in deep
     assert "Annealing changes hardness" in deep
+    brief = build_executive_brief_report(run)
+    assert "Краткий управленческий вывод" in brief
+    assert "https://example.org/paper" in brief
 
     output = build_docx_report(run, tmp_path / "report.docx", mode="full")
     assert output.exists()
     assert output.stat().st_size > 1000
+    brief_docx = build_docx_report(run, tmp_path / "executive_brief.docx", mode="brief")
+    assert brief_docx.exists()
+    assert brief_docx.stat().st_size > 1000
+    brief_pdf = build_pdf_report(run, tmp_path / "executive_brief.pdf", mode="brief")
+    assert brief_pdf.exists()
+    assert brief_pdf.stat().st_size > 1000
 
 
 def test_comparison_insights_can_be_disabled() -> None:

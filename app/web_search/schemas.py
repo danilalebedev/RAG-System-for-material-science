@@ -119,5 +119,8 @@ class LiteratureSearchRun(BaseModel):
     deep_report_markdown: str | None = None
     deep_report_pdf_path: Path | None = None
     deep_report_docx_path: Path | None = None
+    executive_brief_markdown: str | None = None
+    executive_brief_pdf_path: Path | None = None
+    executive_brief_docx_path: Path | None = None
     full_run_json_path: Path | None = None
     warnings: list[str] = Field(default_factory=list)
