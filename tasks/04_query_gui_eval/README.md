@@ -1,6 +1,6 @@
 # 04. Query + GUI + Evaluation
 
-Дата обновления: 2026-07-03.
+Дата обновления: 2026-07-04.
 
 Статус: будущая интеграционная зона. Сейчас не активна: сначала должны появиться
 минимальные outputs из `02_summary_graph` и `03_rag`.
@@ -150,6 +150,211 @@ graph outputs и parsed sources.
   и рекомендуемые следующие эксперименты/литературные направления;
 - каждый run сохраняет отдельный `executive_brief.md`, `executive_brief.docx` и, если включена PDF-генерация,
   `executive_brief.pdf`.
+
+## Technical Implementation Notes
+
+Этот блок фиксирует, что уже реализовано и как слой примерно устроен, чтобы следующая разработка могла
+быстро продолжить работу без обратного разбора кода.
+
+### Основной сценарий выполнения
+
+1. Пользователь вводит R&D-вопрос в Streamlit GUI или CLI.
+2. Запрос проходит через query rewrite:
+   - `app/query/rewrite.py` делает детерминированную нормализацию, извлекает materials/processes/properties
+     и генерирует RU/EN search queries;
+   - если включен LLM rewrite и доступны `YANDEX_API_KEY`/`YANDEX_FOLDER_ID`, этот же шаг может быть
+     усилен YandexGPT, но без ключей система продолжает работать детерминированно.
+3. В GUI пользователь может открыть Query Decomposer, поправить slots и собрать поисковую строку через
+   `build_search_query_from_slots`.
+4. `app/query/literature.py::run_literature_search` собирает единый run:
+   - читает локальные publication artifacts, если они уже существуют;
+   - выполняет web metadata search по выбранным API-источникам;
+   - дедуплицирует и ранжирует результаты;
+   - опционально запускает Deep Search по top-N найденным публикациям;
+   - строит comparison local vs web;
+   - сохраняет JSONL/JSON/Markdown/PDF/DOCX артефакты в `data/processed/web_search/<run_id>/`.
+5. `app/ui/demo_app.py` отображает run как cockpit: публикации, deep summaries, сравнение методик,
+   evidence, графики, отчеты и executive brief.
+
+### Ключевые файлы
+
+- `app/web_search/schemas.py` - Pydantic-контракты для web literature layer:
+  `LiteratureSearchRequest`, `LiteratureSearchResult`, `DeepSearchResult`, `MethodComparison`,
+  `LiteratureSearchRun`.
+- `app/web_search/keywords.py` - deterministic keyword extraction для RU/EN запросов, domain hints
+  материаловедения, quoted phrases и material/process/property tokens.
+- `app/web_search/clients.py` - API-клиенты Crossref, Semantic Scholar, OpenAlex, Europe PMC, DataCite
+  и optional arXiv. Semantic Scholar использует `SEMANTIC_SCHOLAR_API_KEY`, если ключ есть в `.env`.
+- `app/web_search/ranking.py` - score, dedupe и domain filtering. Ранжирование учитывает совпадения
+  keywords в title/abstract/venue, наличие DOI/abstract, citation/year signals, materials-science domain
+  signals и journal quartile boost.
+- `config/web_search/journal_quartiles.json` - seed mapping журналов в Q1/Q2/Q3/Q4. Сейчас это
+  небольшой локальный справочник; его можно заменить выгрузкой Scimago/Scopus/WoS.
+- `app/web_search/deep_search.py` - безопасная загрузка коротких excerpts, extraction summaries и
+  fallback summaries без LLM.
+- `app/web_search/comparison.py` - сравнение local procedure summaries с web procedure summaries.
+- `app/query/literature.py` - orchestration layer для local evidence + web search + deep search +
+  comparison + report payload.
+- `app/query/cockpit.py` - deterministic UI/analytics helpers: query decomposition, Local vs World
+  Dashboard, Knowledge Gap Radar, method matrix, heatmap, evidence cards, numeric intervals, mini graph,
+  executive brief.
+- `app/query/reports.py` - генерация Markdown/PDF/DOCX отчетов, links-only report, Deep Search report,
+  executive brief и `full_run.json`.
+- `app/ui/demo_app.py` - основной Streamlit cockpit.
+- `scripts/search_web_literature.py` - CLI smoke/automation entrypoint.
+- `scripts/run_demo_app.py` - локальный запуск Streamlit на `0.0.0.0` с выводом local/LAN URL.
+
+### Поиск, источники и ранжирование
+
+Автоматический поиск сейчас реально выполняется только по API-источникам, которые есть в `Search resources`
+GUI/CLI: Crossref, Semantic Scholar, OpenAlex, Europe PMC, DataCite и optional arXiv. Ранее обсуждавшиеся
+ResearchGate, eLIBRARY, Springer, MDPI, Wiley, ScienceDirect, Sci-Hub и похожие сайты не скрейпятся generic
+crawler'ом: это сделано намеренно из-за ограничений доступа, ToS, капч, paywall и безопасности. Для расширения
+охвата выбран более устойчивый MVP-формат: scholarly metadata APIs + DOI/URL ссылки на оригинальные страницы.
+
+Deduplication:
+
+- сначала склеивание по нормализованному DOI;
+- затем fallback по URL;
+- затем title similarity/normalization, чтобы убрать одинаковые записи из разных API.
+
+Ranking:
+
+- базовый score растет за совпадение query keywords в title, abstract и venue;
+- есть бонусы за наличие abstract, DOI, source URL, citation count и свежий год;
+- materials-only режим добавляет фильтр/буст по терминам материаловедения, металлургии, сплавов,
+  термообработки, покрытий, коррозии, прочности, hardness и т.д.;
+- journal quartile boost добавляет приоритет Q1/Q2 журналам, но не выбрасывает Q3/Q4, чтобы не терять
+  отраслевые источники;
+- результат score нужно считать эвристикой для demo/ranking, а не библиометрической метрикой.
+
+### Deep Search
+
+Deep Search является opt-in режимом, потому что он медленнее и может тратить LLM-квоту.
+
+Что происходит технически:
+
+- берется top-N уже deduped/ranked публикаций, лимит в GUI сейчас до 20;
+- для каждой публикации используется metadata: title, abstract, DOI, venue, year, authors, URL;
+- если есть безопасный HTTPS URL, система пробует скачать только ограниченный excerpt с timeout и size cap;
+- `http`, `file`, localhost/private IP и redirect в private network блокируются;
+- полный copyrighted full text не сохраняется;
+- при наличии YandexGPT выполняется extraction prompt, совместимый по смыслу с текущими
+  `document_summaries.jsonl` и `procedure_summaries.jsonl`;
+- без ключей создается fallback summary из metadata/abstract, чтобы demo не падало;
+- после extraction строятся `web_document_summaries.jsonl`, `web_procedure_summaries.jsonl`,
+  `comparison_report.json`, `deep_search_report.*` и общий Russian overall summary по найденным статьям.
+
+### Локальная база и сравнение local vs web
+
+Локальный слой сейчас read-only и терпимо относится к частично готовым extraction artifacts. Если файлов нет,
+GUI и CLI не падают, а показывают, что локальное покрытие пока пустое.
+
+Читаемые файлы:
+
+- `data/processed/publications/publications.jsonl`;
+- `data/processed/publications/document_summaries.jsonl`;
+- `data/processed/publications/procedure_summaries.jsonl`.
+
+Сравнение строится по extracted procedure summaries:
+
+- method/procedure;
+- material;
+- conditions;
+- equipment;
+- outputs/properties;
+- observed effects;
+- numeric results;
+- evidence/source ссылкам.
+
+Основные секции comparison:
+
+- что подтверждается и локально, и внешней литературой;
+- что найдено только в локальной базе;
+- что найдено только во внешней литературе;
+- где условия/диапазоны отличаются;
+- gaps, где данных мало или нужна ручная проверка.
+
+### GUI: что показывается пользователю
+
+GUI специально сделан как demo cockpit, потому что проверка, вероятно, будет идти через интерфейс.
+
+Основные зоны:
+
+- Sidebar: demo scenarios, режим `Quick search`/`Deep analysis`, source selection, top-k, Deep Search limit,
+  structured filters по географии/периоду, PDF/DOCX/report options.
+- Верхний блок: R&D question, `Decompose query`, editable query slots и итоговый search query. Это первый
+  универсальный шаг как для web-search, так и для будущего RAG search.
+- `Cockpit`: Local vs World Dashboard, coverage signals, Knowledge Gap Radar, evidence cards,
+  executive summary.
+- `Публикации`: ranked metadata results с нормальным table view и ссылками.
+- `Deep Search`: summaries по статьям и общий summary на русском.
+- `Сравнение`: Contradiction & Consensus Panel, method matrix, heatmap material x method.
+- `Evidence`: evidence cards и candidates numeric ranges.
+- `Графики`: распределение по годам, источникам и mini knowledge map.
+- `Отчет`: выгрузка full report, links-only report, Deep Search report, executive brief, DOCX/PDF/JSON.
+
+### Артефакты одного run
+
+Все generated outputs пишутся в ignored директорию:
+
+`data/processed/web_search/<run_id>/`
+
+Типовые файлы:
+
+- `request.json` - параметры запуска;
+- `query_plan.json` - rewrite/decomposition/search queries;
+- `keywords.json` - extracted keywords/domain hints;
+- `metadata_results.jsonl` - ranked web metadata;
+- `local_matches.jsonl` - найденные локальные публикации/summaries;
+- `resource_links.jsonl` - ссылки на внешние страницы;
+- `web_document_summaries.jsonl` - Deep Search document summaries;
+- `web_procedure_summaries.jsonl` - Deep Search procedure summaries;
+- `comparison_report.json` - structured comparison;
+- `literature_report.md/.pdf/.docx` - полный отчет;
+- `literature_links_report.md/.pdf/.docx` - обычный отчет только со ссылками;
+- `deep_search_report.md/.pdf/.docx` - отчет со ссылками и summaries;
+- `executive_brief.md/.pdf/.docx` - короткий управленческий отчет;
+- `full_run.json` - полный payload для GUI/отладки, включая charts/cockpit payload.
+
+### Точки расширения
+
+- Новый metadata source: добавить enum/label источника, client/parser в `app/web_search/clients.py`,
+  нормализацию в `LiteratureSearchResult`, подключение в orchestrator и unit tests на mocked JSON.
+- Новый сайт без API: сначала проверить наличие официального API/RSS/OAI-PMH/export endpoint. Generic crawler
+  не добавлять без отдельного security review.
+- Улучшение RAG: будущий локальный RAG лучше подключить в `app/query/literature.py` вместо текущего
+  lightweight local search, сохранив выходной формат `local_matches` для GUI/report compatibility.
+- Настоящий graph backend: заменить/дополнить `mini_graph_edges` данными из `data/processed/graph/*`,
+  оставив текущий DOT/табличный fallback.
+- Более сильные отчеты: расширять `app/query/reports.py`, но держать PDF-таблицы узкими. Для PDF уже
+  специально оставлены только `#`, `Title`, `Link`, чтобы не ломать верстку длинными DOI/source полями.
+- Более точные квартильные бусты: обновить `config/web_search/journal_quartiles.json` внешней выгрузкой и
+  добавить тесты на нормализацию названий журналов.
+
+### Ограничения и риски
+
+- Geography/year filters в MVP в основном усиливают query и отображаются в query plan; это еще не строгие
+  API-фильтры для всех источников.
+- Semantic Scholar без API key может быстро rate-limit'ить запросы.
+- Deep Search quality зависит от наличия abstract/excerpt и LLM keys.
+- Heatmap/method comparison содержательны только после Deep Search или при наличии локальных
+  `procedure_summaries.jsonl`.
+- Expert nodes в mini knowledge map сейчас приближены через authors; после готовности graph layer нужно
+  заменить на реальные expert/person/entity связи.
+
+### Проверки
+
+Текущая рекомендуемая проверка после изменений в этом слое:
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall app scripts
+.\.venv\Scripts\python.exe -m pytest tests\test_web_search.py -q
+.\.venv\Scripts\python.exe scripts\search_web_literature.py "никелевые сплавы термообработка твердость" --top-k 5 --deep-search none
+.\.venv\Scripts\python.exe scripts\run_demo_app.py
+```
+
+Ожидаемый GUI URL для локальной demo-сессии: `http://127.0.0.1:8501/`.
 
 Security constraints:
 
