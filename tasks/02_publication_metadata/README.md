@@ -133,6 +133,30 @@ cache/resume и лимиты нагрузки.
 
 Все `data/processed/*` ignored и не коммитятся.
 
+## Domain Coverage
+
+Текущий extraction layer покрывает требуемые классы данных так:
+
+- научные публикации и отчеты -> `PublicationRecord`;
+- экспериментальные данные и протоколы опытов -> `ProcedureSummaryRecord`
+  плюс `experimental_protocols`, `process_parameters`, `analysis_results`,
+  `numeric_ranges`;
+- технологические решения -> `technology_solutions`, `design_features`,
+  `equipment_details`, `conditions`, `outputs`;
+- материалы и вещества -> `materials`, `material_name`, `input_materials`,
+  `reagents`, `outputs`;
+- оборудование и установки -> `equipment`, `equipment_details`, затем
+  отдельные `Equipment` nodes на graph stage;
+- исследовательские команды и эксперты -> `authors`, `organizations`,
+  `experts`, `facilities`;
+- выводы и рекомендации -> `key_findings`, `observed_effects`,
+  `recommendations`, `limitations_or_gaps`, `validation_methods`.
+
+Оборудование не пишется в отдельный JSONL на этом этапе: оно остается в
+document/procedure records с evidence. Graph builder должен поднять эти поля в
+отдельные `Equipment` nodes и связать их с `Experiment`/`Process` через
+официальные отношения и provenance.
+
 ## Multilingual Policy
 
 Корпус может быть русским, английским или смешанным. Для этого этапа не нужно
@@ -306,7 +330,16 @@ Mapping baseline:
 - `properties`
 - `outputs`
 - `conditions`
+- `process_parameters`
 - `observed_effects`
+- `numerical_results`
+- `analysis_results`
+- `equipment_details`
+- `technology_solutions`
+- `design_features`
+- `sample_ids`
+- `scale`
+- `temporal_scope`
 - `graph_hints`
 - `confidence`
 - `extraction_status`
@@ -424,6 +457,13 @@ Mapping baseline:
   "properties": ["извлечение", "эффективность"],
   "outputs": ["товарные концентраты"],
   "conditions": [],
+  "process_parameters": [],
+  "analysis_results": [],
+  "equipment_details": [],
+  "technology_solutions": [],
+  "design_features": [],
+  "sample_ids": [],
+  "scale": "industrial",
   "observed_effects": [],
   "graph_hints": [
     {
@@ -535,11 +575,24 @@ Optional shared helpers после согласования:
 .\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --output-dir data\processed\publications --aggregate-only --quality-report
 ```
 
+С sampled summary audit без LLM:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --output-dir data\processed\publications --aggregate-only --summary-audit --summary-audit-sample-size 15
+```
+
+С sampled LLM-as-judge audit на малом сэмпле:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\extract_publication_metadata.py --output-dir data\processed\publications --aggregate-only --summary-audit --summary-audit-llm --summary-audit-sample-size 5
+```
+
 Ожидаемые проверки:
 
 - создан `publications.jsonl`;
 - созданы `document_summaries.jsonl` и `procedure_summaries.jsonl`;
 - при `--quality-report` создан `publication_quality_report.json`;
+- при `--summary-audit` создан `summary_quality_report.json`;
 - ровно одна publication record на входной `doc_id`;
 - одна document summary на входной `doc_id`;
 - `procedure_summaries.jsonl` допускает 0..N procedures на документ;
