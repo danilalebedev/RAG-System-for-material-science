@@ -17,10 +17,18 @@ class ProjectPaths:
     interim_dir: Path = PROJECT_ROOT / "data" / "interim"
     parsed_dir: Path = PROJECT_ROOT / "data" / "parsed"
     full_texts_dir: Path = PROJECT_ROOT / "data" / "parsed" / "full_texts"
+    spreadsheet_csv_dir: Path = PROJECT_ROOT / "data" / "parsed" / "spreadsheets_csv"
     parsing_report_dir: Path = PROJECT_ROOT / "reports" / "parsing"
 
     def ensure(self) -> None:
-        for path in (self.raw_dir, self.interim_dir, self.parsed_dir, self.full_texts_dir, self.parsing_report_dir):
+        for path in (
+            self.raw_dir,
+            self.interim_dir,
+            self.parsed_dir,
+            self.full_texts_dir,
+            self.spreadsheet_csv_dir,
+            self.parsing_report_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
 

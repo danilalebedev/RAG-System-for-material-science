@@ -7,6 +7,7 @@
 - `data/raw/` содержит исходный корпус задания; его нельзя случайно публиковать как обычный код.
 - `data/parsed/` и `data/indexes/` являются воспроизводимыми generated artifacts.
 - `data/parsed/full_texts/` содержит полный извлеченный текст документов, то есть по сути копию корпуса.
+- `data/parsed/spreadsheets_csv/` содержит полные CSV-выгрузки Excel workbook-ов.
 - Большие JSONL/индексы быстро раздувают git history и мешают нормальной работе с репозиторием.
 - В текущих локальных артефактах могут быть абсолютные пути конкретной Windows-машины; для передачи нужен portable export.
 
@@ -26,9 +27,12 @@
    - `data/parsed/chunks.jsonl`
    - `data/parsed/tables.jsonl`
    - `data/parsed/full_texts/*.txt`
+   - `data/parsed/spreadsheets_csv/**/*.csv`
    - `reports/parsing/*`
 
-Архив переписывает абсолютные пути в JSONL на repo-relative paths, поэтому его можно переносить между машинами.
+Архив переписывает абсолютные пути в JSONL на repo-relative paths, включая
+`full_text_path`, `csv_path` и `csv_export_dir`, поэтому его можно переносить
+между машинами.
 
 ## Легкий архив без full texts
 
@@ -39,6 +43,15 @@
 ```
 
 Для RAG обычно нужны chunks и source metadata; full texts полезны для ручной проверки и source viewer.
+
+Если нужно передать данные без полных Excel CSV:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\package_parsed_artifacts.py --no-spreadsheet-csv
+```
+
+Для точной работы с табличными данными лучше оставлять CSV в архиве: chunks
+содержат только preview, а полные ячейки лежат в `data/parsed/spreadsheets_csv/`.
 
 ## Что не стоит делать
 
@@ -57,4 +70,3 @@ DVC имеет смысл, если дальше появятся несколь
 - benchmark datasets.
 
 Для текущего этапа проще portable zip + ссылка в командном чате. Если появятся регулярные обновления данных, можно добавить DVC remote.
-
