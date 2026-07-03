@@ -31,11 +31,14 @@ artifacts/
 Литература/
 
 # Large/generated archives
+*.tar.gz
+*.tgz
 *.zip
 *.rar
 *.7z
 *.001
 *.002
+data/exports/
 
 # OS/editor
 .DS_Store
