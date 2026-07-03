@@ -1,0 +1,46 @@
+flowchart TD
+    A["Корпус данных: DOCX, PDF, HTML, каталоги экспериментов, справочники"] --> B["Парсинг и нормализация"]
+    B --> B1["Текстовые чанки с provenance: doc_id, section, page, url"]
+    B --> B2["Таблицы и списки параметров"]
+    B --> B3["Процедурные блоки: режимы, операции, оборудование"]
+
+    B1 --> C1["Dense embeddings"]
+    B1 --> C2["BM25 / keyword index"]
+    B3 --> C3["RECIPER-view: краткие procedure summaries"]
+    B1 --> D["Извлечение сущностей и связей"]
+    B2 --> D
+    B3 --> D
+
+    D --> E["Валидация JSON-схемы, единицы измерения, evidence spans"]
+    E --> F["Нормализация сущностей: материалы, свойства, режимы, команды"]
+    F --> G["Experiment-centric Knowledge Graph"]
+
+    C1 --> H["Vector index"]
+    C2 --> I["Lexical index"]
+    C3 --> H
+
+    J["Пользовательский вопрос"] --> K["Конкретизация запроса: intent + slots"]
+    K --> K1["Материал X"]
+    K --> K2["Режим Y"]
+    K --> K3["Свойство Z"]
+    K --> K4["Тип ответа: факт, сравнение, история, пробел, гипотеза"]
+
+    K --> L["Hybrid retrieval"]
+    H --> L
+    I --> L
+    G --> L
+
+    L --> M["Reranking: semantic + lexical + graph proximity"]
+    M --> N["Evidence pack: chunks, procedures, triples, citations"]
+    N --> O["LLM answer / hypothesis generator"]
+    O --> P["Ответ с источниками, графом связей, уверенностью и пробелами"]
+    P --> Q["UI: Answer | Evidence | Graph | Gaps | Benchmark"]
+
+    R["Evaluation harness"] --> S["Retrieval metrics"]
+    R --> T["Extraction metrics"]
+    R --> U["Answer faithfulness"]
+    R --> V["Latency/resource metrics"]
+    S --> W["Сравнение baselines"]
+    T --> W
+    U --> W
+    V --> W

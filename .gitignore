@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+*.key
+*.pem
+router_ai_API.docx
+
+# Local data artifacts
+data/raw/
+data/interim/
+data/parsed/
+data/processed/
+data/indexes/
+reports/parsing/
+logs/
+Литература/
+
+# Large/generated archives
+*.zip
+*.rar
+*.7z
+*.001
+*.002
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

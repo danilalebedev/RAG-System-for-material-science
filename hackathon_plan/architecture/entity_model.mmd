@@ -1,0 +1,35 @@
+graph LR
+    Document["Document / WebPage / Report"]
+    Chunk["Chunk / Passage"]
+    Experiment["Experiment / Procedure"]
+    Material["Material / Alloy"]
+    Composition["Composition"]
+    Regime["Processing Regime"]
+    Equipment["Equipment / Setup"]
+    Property["Property"]
+    Measurement["Measurement"]
+    Claim["Claim / Conclusion"]
+    Team["Research Team / Lab"]
+    Topic["Topic / Tag"]
+    Gap["Data Gap"]
+    Hypothesis["Hypothesis"]
+
+    Document -- "HAS_CHUNK" --> Chunk
+    Document -- "REPORTS" --> Experiment
+    Chunk -- "EVIDENCE_FOR" --> Experiment
+    Experiment -- "USES_MATERIAL" --> Material
+    Material -- "HAS_COMPOSITION" --> Composition
+    Experiment -- "HAS_REGIME" --> Regime
+    Experiment -- "USES_EQUIPMENT" --> Equipment
+    Experiment -- "MEASURES" --> Measurement
+    Measurement -- "OF_PROPERTY" --> Property
+    Measurement -- "OBSERVED_EFFECT" --> Claim
+    Claim -- "SUPPORTED_BY" --> Chunk
+    Claim -- "CONTRADICTS" --> Claim
+    Team -- "CONDUCTED" --> Experiment
+    Experiment -- "TAGGED_AS" --> Topic
+    Gap -- "MISSING_FOR" --> Material
+    Gap -- "MISSING_PROPERTY" --> Property
+    Hypothesis -- "TARGETS" --> Gap
+    Hypothesis -- "BASED_ON" --> Claim
+    Hypothesis -- "PROPOSES_REGIME" --> Regime

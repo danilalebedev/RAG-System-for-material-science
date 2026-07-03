@@ -1,0 +1,15 @@
+{
+  "public_dataset_url": "https://disk.yandex.ru/d/npigiuw4Rbe9Pg",
+  "dataset_name": "Задача 2. Научный клубок",
+  "root_folder": "Источники информации",
+  "seed_download": {
+    "max_files": 30,
+    "preferred_extensions": [".pdf", ".docx", ".pptx", ".xlsx", ".xls"],
+    "max_file_size_mb": 80
+  },
+  "chunking": {
+    "target_chars": 3500,
+    "overlap_chars": 400,
+    "min_chars": 300
+  }
+}

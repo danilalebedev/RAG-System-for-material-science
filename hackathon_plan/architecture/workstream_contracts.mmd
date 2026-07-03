@@ -1,0 +1,29 @@
+flowchart LR
+    RAW["data/raw/yandex_task2/*"] --> PARSE["A. Corpus parsing"]
+    PARSE --> PARSED["documents.jsonl<br/>chunks.jsonl<br/>tables.jsonl<br/>full_texts/*.txt"]
+
+    PARSED --> NORM["B. Normalization"]
+    NORM --> CANON["canonical entities<br/>aliases<br/>units<br/>geo"]
+
+    PARSED --> EXTRACT["C1. Metadata extraction<br/>RECIPER summaries"]
+    CANON --> EXTRACT
+    EXTRACT --> FACTS["facts.jsonl<br/>relations.jsonl<br/>procedure_summaries.jsonl"]
+
+    FACTS --> GRAPH["C2. Graph build"]
+    CANON --> GRAPH
+    GRAPH --> GRAPH_DATA["nodes.jsonl<br/>edges.jsonl<br/>source_spans.jsonl"]
+
+    PARSED --> RAG["D. RAG index build<br/>BM25 + embeddings + rerank"]
+    FACTS --> RAG
+    GRAPH_DATA --> RAG
+    RAG --> IDX["data/indexes/*"]
+
+    USER["User question"] --> QUERY["E. Query understanding<br/>intent + slots + clarification"]
+    QUERY --> RAG
+    RAG --> ANSWER["Grounded answer<br/>evidence + mini-graph + gaps"]
+
+    PARSED --> EVAL["F. Evaluation"]
+    FACTS --> EVAL
+    GRAPH_DATA --> EVAL
+    IDX --> EVAL
+

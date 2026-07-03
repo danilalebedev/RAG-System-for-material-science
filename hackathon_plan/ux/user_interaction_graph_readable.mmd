@@ -1,0 +1,40 @@
+flowchart LR
+    U["1. Пользователь задает вопрос<br/>материал X + режим Y + свойство Z"] --> UI["2. UI выбирает режим<br/>Факты / Сравнение / Пробелы / Гипотезы"]
+
+    UI --> QP["3. Query parser<br/>intent + slots + ограничения"]
+    QP --> NEED{"4. Слотов хватает?"}
+
+    NEED -- "нет" --> CL["5a. Уточнение<br/>варианты из справочника и графа"]
+    CL --> U
+
+    NEED -- "да" --> RET["5b. Hybrid retrieval"]
+
+    RET --> BM25["BM25<br/>марки, числа, аббревиатуры"]
+    RET --> DENSE["Dense search<br/>смысловые совпадения"]
+    RET --> PROC["Procedure view<br/>summary режимов"]
+    RET --> GRAPH["Graph expansion<br/>эксперименты, свойства, команды"]
+
+    BM25 --> EVID["6. Evidence pack<br/>chunks + tables + triples + citations"]
+    DENSE --> EVID
+    PROC --> EVID
+    GRAPH --> EVID
+
+    EVID --> CHECK{"7. Доказательств достаточно?"}
+    CHECK -- "нет" --> GAPS["8a. Ответ с пробелами<br/>чего не хватает и близкие аналоги"]
+    CHECK -- "да" --> ANSWER["8b. Grounded answer<br/>выводы только по evidence"]
+
+    GAPS --> OUT["9. Результат в UI"]
+    ANSWER --> OUT
+
+    OUT --> A1["Answer"]
+    OUT --> A2["Evidence"]
+    OUT --> A3["Graph"]
+    OUT --> A4["Gaps"]
+    OUT --> A5["Benchmark"]
+
+    A1 --> FB["10. Feedback / refinement<br/>сузить фильтр, сравнить, открыть источник"]
+    A2 --> FB
+    A3 --> FB
+    A4 --> FB
+    A5 --> FB
+    FB --> QP

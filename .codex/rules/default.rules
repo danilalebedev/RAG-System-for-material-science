@@ -1,0 +1,239 @@
+# Starter Codex command rules.
+# Place at .codex/rules/default.rules in a trusted repository config layer,
+# or copy to ~/.codex/rules/default.rules for a user-level policy.
+# Edit package-manager and build commands to match your project.
+
+# -------------------------
+# Safe read-only inspection
+# -------------------------
+
+prefix_rule(
+    pattern = ["rg"],
+    decision = "allow",
+    justification = "ripgrep is safe for repository search",
+    match = ["rg TODO", "rg --files", "rg -n error src"],
+)
+
+prefix_rule(
+    pattern = ["ls"],
+    decision = "allow",
+    justification = "directory listing is safe inspection",
+    match = ["ls", "ls -la"],
+)
+
+prefix_rule(
+    pattern = ["pwd"],
+    decision = "allow",
+    justification = "printing the working directory is safe inspection",
+    match = ["pwd"],
+)
+
+prefix_rule(
+    pattern = ["cat"],
+    decision = "allow",
+    justification = "reading repository files is safe inspection",
+    match = ["cat package.json", "cat pyproject.toml"],
+)
+
+prefix_rule(
+    pattern = ["sed", "-n"],
+    decision = "allow",
+    justification = "printing selected file ranges is safe inspection",
+    match = ["sed -n 1,120p README.md"],
+)
+
+prefix_rule(
+    pattern = ["git", "status"],
+    decision = "allow",
+    justification = "git status is read-only",
+    match = ["git status", "git status --short"],
+)
+
+prefix_rule(
+    pattern = ["git", "diff"],
+    decision = "allow",
+    justification = "git diff is read-only",
+    match = ["git diff", "git diff -- src/file.ts", "git diff --check"],
+)
+
+prefix_rule(
+    pattern = ["git", "log"],
+    decision = "allow",
+    justification = "git log is read-only",
+    match = ["git log --oneline -5"],
+)
+
+# -------------------------
+# Common validation commands
+# Edit this section for your actual project commands.
+# -------------------------
+
+prefix_rule(
+    pattern = ["npm", "test"],
+    decision = "allow",
+    justification = "project tests are expected validation commands",
+    match = ["npm test", "npm test -- --runInBand"],
+)
+
+prefix_rule(
+    pattern = ["npm", "run", ["test", "lint", "typecheck", "build"]],
+    decision = "allow",
+    justification = "declared npm scripts are expected validation commands",
+    match = ["npm run lint", "npm run typecheck", "npm run build"],
+)
+
+prefix_rule(
+    pattern = ["pnpm", ["test", "lint", "build"]],
+    decision = "allow",
+    justification = "declared pnpm commands are expected validation commands",
+    match = ["pnpm test", "pnpm lint", "pnpm build"],
+)
+
+prefix_rule(
+    pattern = ["pnpm", "run", ["test", "lint", "typecheck", "build"]],
+    decision = "allow",
+    justification = "declared pnpm scripts are expected validation commands",
+    match = ["pnpm run lint", "pnpm run typecheck", "pnpm run build"],
+)
+
+prefix_rule(
+    pattern = ["yarn", ["test", "lint", "build"]],
+    decision = "allow",
+    justification = "declared yarn commands are expected validation commands",
+    match = ["yarn test", "yarn lint", "yarn build"],
+)
+
+prefix_rule(
+    pattern = ["pytest"],
+    decision = "allow",
+    justification = "pytest is an expected validation command",
+    match = ["pytest", "pytest tests/test_example.py"],
+)
+
+prefix_rule(
+    pattern = ["python", "-m", ["pytest", "unittest", "compileall"]],
+    decision = "allow",
+    justification = "Python test and compile checks are expected validation commands",
+    match = ["python -m pytest", "python -m unittest", "python -m compileall src"],
+)
+
+prefix_rule(
+    pattern = ["uv", "run"],
+    decision = "allow",
+    justification = "uv run is commonly used for project validation; review project commands separately",
+    match = ["uv run pytest", "uv run ruff check ."],
+)
+
+prefix_rule(
+    pattern = ["cargo", ["test", "check", "clippy", "build", "fmt"]],
+    decision = "allow",
+    justification = "Cargo validation commands are expected for Rust projects",
+    match = ["cargo test", "cargo check", "cargo clippy", "cargo build", "cargo fmt --check"],
+)
+
+prefix_rule(
+    pattern = ["go", ["test", "vet", "build"]],
+    decision = "allow",
+    justification = "Go validation commands are expected for Go projects",
+    match = ["go test ./...", "go vet ./...", "go build ./..."],
+)
+
+# -------------------------
+# Dependency and network operations
+# Prompt by default. These can mutate lockfiles, fetch code, or execute install scripts.
+# -------------------------
+
+prefix_rule(
+    pattern = ["npm", ["install", "add", "update"]],
+    decision = "prompt",
+    justification = "Dependency changes and install scripts require approval",
+    match = ["npm install", "npm install lodash", "npm update"],
+)
+
+prefix_rule(
+    pattern = ["pnpm", ["install", "add", "update", "upgrade"]],
+    decision = "prompt",
+    justification = "Dependency changes and install scripts require approval",
+    match = ["pnpm install", "pnpm add zod", "pnpm update"],
+)
+
+prefix_rule(
+    pattern = ["yarn", ["install", "add", "upgrade"]],
+    decision = "prompt",
+    justification = "Dependency changes and install scripts require approval",
+    match = ["yarn install", "yarn add zod", "yarn upgrade"],
+)
+
+prefix_rule(
+    pattern = ["pip", ["install", "download"]],
+    decision = "prompt",
+    justification = "Python dependency downloads require approval",
+    match = ["pip install requests", "pip download requests"],
+)
+
+prefix_rule(
+    pattern = ["curl"],
+    decision = "prompt",
+    justification = "Network access requires approval",
+    match = ["curl https://example.com"],
+)
+
+prefix_rule(
+    pattern = ["wget"],
+    decision = "prompt",
+    justification = "Network access requires approval",
+    match = ["wget https://example.com/file"],
+)
+
+# -------------------------
+# Destructive or high-risk commands
+# -------------------------
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "Can discard user work. Use git diff/status and ask the user for an explicit recovery plan instead.",
+    match = ["git reset --hard"],
+)
+
+prefix_rule(
+    pattern = ["git", "clean"],
+    decision = "prompt",
+    justification = "Can delete untracked files; require explicit approval",
+    match = ["git clean -fd", "git clean -xdf"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--force"],
+    decision = "forbidden",
+    justification = "Force pushes can overwrite remote history. Ask the user for explicit manual instructions.",
+    match = ["git push --force"],
+)
+
+prefix_rule(
+    pattern = ["rm", "-rf"],
+    decision = "prompt",
+    justification = "Recursive deletion requires explicit approval",
+    match = ["rm -rf tmp"],
+)
+
+prefix_rule(
+    pattern = ["docker", ["system", "volume"], ["prune", "rm"]],
+    decision = "prompt",
+    justification = "Docker cleanup can delete data; require approval",
+    match = ["docker system prune", "docker volume rm my-volume"],
+)
+
+prefix_rule(
+    pattern = ["kubectl", ["delete", "apply", "rollout", "scale"]],
+    decision = "prompt",
+    justification = "Cluster changes require explicit approval",
+    match = ["kubectl delete pod x", "kubectl apply -f deploy.yaml"],
+)
+
+prefix_rule(
+    pattern = ["terraform", ["apply", "destroy"]],
+    decision = "prompt",
+    justification = "Infrastructure changes require explicit approval",
+    match = ["terraform apply", "terraform destroy"],
+)
