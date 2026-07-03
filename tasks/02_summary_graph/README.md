@@ -10,13 +10,15 @@ graph, который RAG потом сможет только читать.
 
 Мы строим не "еще один RAG", а отдельную структурную проекцию корпуса:
 
-1. Из parsed chunks/tables/full texts выбираем фрагменты с экспериментами,
+1. Читаем `data/processed/publications/publications.jsonl`, если он уже
+   построен, чтобы `Publication` nodes не извлекались заново из каждого chunk.
+2. Из parsed chunks/tables/full texts выбираем фрагменты с экспериментами,
    процессами, режимами, свойствами, числами, географией и оборудованием.
-2. Для этих фрагментов делаем RECIPER-style summaries: краткое процедурное
+3. Для этих фрагментов делаем RECIPER-style summaries: краткое процедурное
    представление "материал -> процесс/режим -> условия -> выход/свойство".
-3. Из summaries и evidence извлекаем typed facts и relations.
-4. По ним строим graph строго по сущностям и отношениям из условия задания.
-5. Каждый node/edge/fact сохраняет provenance: `doc_id`, `chunk_id`,
+4. Из summaries и evidence извлекаем typed facts и relations.
+5. По ним строим graph строго по сущностям и отношениям из условия задания.
+6. Каждый node/edge/fact сохраняет provenance: `doc_id`, `chunk_id`,
    `source_span_id`, evidence span, confidence.
 
 Summary слой нужен для graph и последующей интеграции. Он не заменяет исходные
@@ -29,6 +31,7 @@ flowchart LR
     A["data/parsed/chunks.jsonl"] --> B["Candidate selector"]
     C["data/parsed/tables.jsonl"] --> B
     D["full_texts by doc_id"] --> B
+    P["publications.jsonl"] --> I
     B --> E["Rule extraction"]
     B --> F["LLM procedure summaries"]
     E --> G["Typed facts"]
@@ -94,6 +97,8 @@ Read-only входы:
 - `data/parsed/tables.jsonl`
 - `data/parsed/full_texts/*.txt`
 - `data/parsed/spreadsheets_csv/**/*.csv`
+- `data/processed/publications/publications.jsonl` - optional upstream
+  библиография для `Publication` nodes.
 
 Командный архив данных:
 
@@ -253,19 +258,21 @@ Generated outputs:
 ## Implementation Plan
 
 1. Схемы: добавить Pydantic/dataclass-модели для extraction и graph records.
-2. Candidate selector: найти chunks с признаками process/experiment/condition:
+2. Publication seed: если есть `publications.jsonl`, создать `Publication`
+   node seed map по `doc_id`/`publication_id`.
+3. Candidate selector: найти chunks с признаками process/experiment/condition:
    temperature, pressure, concentration, %, MPa, C, K, h, min, sample,
    experiment, synthesis, annealing, leaching, flotation, deposit, facility.
-3. Rule extraction: regex + unit parsing для чисел, температур, давлений,
+4. Rule extraction: regex + unit parsing для чисел, температур, давлений,
    концентраций, времени, географии и простых material/property mentions.
-4. LLM extraction: YandexGPT Pro 5.1 для JSON summaries по candidate chunks,
+5. LLM extraction: YandexGPT Pro 5.1 для JSON summaries по candidate chunks,
    Lite только для дешевых коротких summaries; RouterAI как optional fallback.
-5. Validation: строгая проверка JSON, allowed entity/edge types, confidence
+6. Validation: строгая проверка JSON, allowed entity/edge types, confidence
    range, required provenance.
-6. Normalization hooks: не делать тяжелую онтологию сразу; ввести adapters для
+7. Normalization hooks: не делать тяжелую онтологию сразу; ввести adapters для
    material/property/unit/geo normalization.
-7. Graph builder: merge mentions в nodes, relations в edges, attach evidence.
-8. Quality report: coverage, top node/edge types, missing evidence, conflicts,
+8. Graph builder: merge mentions в nodes, relations в edges, attach evidence.
+9. Quality report: coverage, top node/edge types, missing evidence, conflicts,
    contradiction candidates, examples for manual review.
 
 ## Suggested Libraries

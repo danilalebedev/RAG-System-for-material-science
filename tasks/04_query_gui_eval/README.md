@@ -25,6 +25,12 @@
 - `data/processed/graph/edges.jsonl`
 - `data/processed/graph/graph_stats.json`
 
+От `02_publication_metadata`:
+
+- `data/processed/publications/publications.jsonl`
+- `data/processed/publications/publication_authors.jsonl`
+- `data/processed/publications/publication_metadata_report.json`
+
 От `03_rag`:
 
 - `data/indexes/chunks/*`

@@ -12,6 +12,8 @@
   роли workstreams и правила синхронизации.
 - [`01_parsing/`](01_parsing/) - статус парсинга корпуса, layout артефактов и
   процедура догрузки новых файлов.
+- [`02_publication_metadata/`](02_publication_metadata/) - библиографическая
+  metadata: авторы, год, журнал/конференция, DOI, тип документа, evidence.
 - [`02_summary_graph/`](02_summary_graph/) - активная зона: RECIPER-style
   summaries, extraction фактов и построение typed graph.
 - [`03_rag/`](03_rag/) - зона RAG-разработчика: embeddings, vector index,
@@ -22,8 +24,9 @@
 ## Текущий фокус
 
 Мы сейчас не трогаем RAG-реализацию. RAG находится в `tasks/03_rag/` и
-разрабатывается отдельно. Наша независимая задача - `tasks/02_summary_graph/`:
-из parsed chunks/tables/full texts собрать summaries, typed facts и граф с
+разрабатывается отдельно. Наша независимая зона - metadata/graph:
+`tasks/02_publication_metadata/` собирает библиографию источников, а
+`tasks/02_summary_graph/` собирает summaries, typed facts и граф с
 доказательствами.
 
 ## Правила

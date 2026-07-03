@@ -75,15 +75,19 @@ flowchart LR
     PARSE --> PARSED["data/parsed/*"]
 
     PARSED --> RAGIDX["D. RAG index build"]
+    PARSED --> PUBMETA["B2. Publication metadata"]
     PARSED --> EXTRACT["C. Metadata extraction"]
     PARSED --> NORM["B. Normalization"]
 
+    PUBMETA --> GRAPH
     NORM --> EXTRACT
     EXTRACT --> GRAPH["Graph build"]
 
+    PUBMETA --> PUBLICATIONS["data/processed/publications/*"]
     EXTRACT --> FACTS["data/processed/extraction/*"]
     GRAPH --> GRAPH_DATA["data/processed/graph/*"]
 
+    PUBLICATIONS --> RAGIDX
     FACTS --> RAGIDX
     GRAPH_DATA --> RAGIDX
     RAGIDX --> INDEXES["data/indexes/*"]
@@ -192,12 +196,50 @@ flowchart LR
 - `app/index/*`
 - `data/indexes/*`
 
+### B2. Publication metadata
+
+Цель: отдельно извлечь библиографическую metadata источников корпуса, чтобы
+`Publication` nodes строились из нормализованного `publications.jsonl`, а не
+переизвлекались из каждого chunk.
+
+Подробное ТЗ и schema: [`tasks/02_publication_metadata/`](tasks/02_publication_metadata/).
+
+Минимальный контракт:
+
+- `publication_id`, `doc_id`, `document_kind`, `source_type`;
+- `title`, `authors`, `year`, `venue_name`, `venue_type`, `doi`;
+- `source_path`, `file_name`, `extension`;
+- `embedded_metadata`, `confidence`, `missing_fields`, `evidence`.
+
+Можно менять:
+
+- `app/extract/*`
+- `config/extraction/publication_metadata.json`
+- `scripts/extract_publication_metadata.py`
+- `tasks/02_publication_metadata/*`
+
+Пишет:
+
+- `data/processed/publications/publications.jsonl`
+- `data/processed/publications/publication_authors.jsonl`
+- `data/processed/publications/publication_venues.jsonl`
+- `data/processed/publications/publication_evidence_spans.jsonl`
+- `data/processed/publications/publication_metadata_report.json`
+
+Нельзя менять:
+
+- `app/rag/*`
+- `app/index/*`
+- `data/indexes/*`
+- `data/parsed/*` вручную.
+
 ### C. Metadata extraction + RECIPER + graph
 
 Это зона для второго разработчика.
 
 Цель: извлечь typed facts, procedure summaries, nodes/edges официального графа и
-provenance.
+provenance. Для `Publication` nodes сначала читать
+`data/processed/publications/publications.jsonl`, если он уже построен.
 
 Можно менять:
 
