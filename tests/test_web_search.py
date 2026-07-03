@@ -16,7 +16,7 @@ from app.web_search.comparison import compare_methods
 from app.web_search.deep_search import run_deep_search
 from app.web_search.fetch import is_safe_external_url
 from app.web_search.keywords import extract_keywords
-from app.query.reports import build_pdf_report, run_overall_summary
+from app.query.reports import build_deep_report, build_docx_report, build_links_report, build_pdf_report, comparison_insights, run_overall_summary
 from app.query.rewrite import deterministic_query_rewrite
 from app.ui.demo_app import table_df
 from app.web_search.resource_links import build_resource_links
@@ -476,6 +476,52 @@ def test_pdf_report_is_generated(tmp_path: Path) -> None:
     output = build_pdf_report(run, tmp_path / "report.pdf")
     assert output.exists()
     assert output.stat().st_size > 1000
+
+
+def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
+    result = LiteratureSearchResult(
+        result_id="crossref_docx",
+        source="crossref",
+        title="Nickel alloy annealing hardness",
+        year=2024,
+        url="https://example.org/paper",
+    )
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="nickel alloy annealing", generate_pdf_report=True),
+        query_plan={"corrected_query": "nickel alloy annealing", "search_queries": ["nickel alloy annealing materials science"]},
+        keywords=["nickel", "alloy", "annealing"],
+        results=[result],
+        local_matches=[{"title": "Local nickel report"}],
+        deep_results=[
+            DeepSearchResult(
+                result_id="crossref_docx",
+                source_result=result,
+                document_summary={"summary": "Annealing changes hardness in nickel alloys."},
+            )
+        ],
+        comparison=None,
+    )
+    links = build_links_report(run)
+    deep = build_deep_report(run)
+    assert "Отчет по релевантным ссылкам" in links
+    assert "https://example.org/paper" in links
+    assert "Deep Search отчет" in deep
+    assert "Annealing changes hardness" in deep
+
+    output = build_docx_report(run, tmp_path / "report.docx", mode="full")
+    assert output.exists()
+    assert output.stat().st_size > 1000
+
+
+def test_comparison_insights_can_be_disabled() -> None:
+    result = LiteratureSearchResult(result_id="crossref_insights", source="crossref", title="Nickel alloy", year=2024)
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="nickel alloy", generate_comparison_insights=False),
+        keywords=["nickel"],
+        results=[result],
+        comparison=None,
+    )
+    assert comparison_insights(run) == ""
 
 
 def test_streamlit_table_df_serializes_mixed_nested_values() -> None:

@@ -114,6 +114,17 @@ graph outputs и parsed sources.
   впечатление, что они автоматически скрейпятся.
 - Deep Search имеет настраиваемый лимит статей; общий summary по всем найденным
   summary показывается во вкладке `Deep Search` и попадает в markdown/PDF отчет.
+- Лимит Deep Search в GUI увеличен до 20 статей. Deep Search можно запускать сразу
+  вместе с основным запросом или отдельной кнопкой после metadata-only web-search
+  по уже найденному ranked list.
+- Отчеты разделены на full report, links-only report и Deep Search report.
+  Каждый run сохраняет markdown, PDF и DOCX варианты, а также `full_run.json`
+  с web/local/deep/comparison данными и chart data по годам и источникам.
+- PDF-таблица релевантных источников намеренно оставляет только `#`, `Title`,
+  `Link`, чтобы длинные DOI/source/year поля не ломали верстку.
+- В GUI есть опция генерации детерминированных выводов по сравнению локального
+  поиска и web-search: тренды по годам/источникам, пересечения методик,
+  local-only/web-only методики и отличающиеся условия.
 - Generated artifacts пишутся в `data/processed/web_search/<run_id>/`.
 
 Security constraints:

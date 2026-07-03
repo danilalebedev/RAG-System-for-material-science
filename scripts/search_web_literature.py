@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-materials-only", action="store_true", default=False)
     parser.add_argument("--no-query-rewrite", action="store_true", default=False)
     parser.add_argument("--no-llm-query-rewrite", action="store_true", default=False)
+    parser.add_argument("--no-comparison-insights", action="store_true", default=False)
     parser.add_argument("--no-recommended-resource-links", action="store_true", default=False)
     parser.add_argument("--recommended-resources", nargs="*", default=None)
     parser.add_argument("--no-fetch-excerpts", action="store_true", default=False)
@@ -50,6 +51,7 @@ def main() -> int:
         materials_only=not args.no_materials_only,
         use_query_rewrite=not args.no_query_rewrite,
         use_llm_query_rewrite=not args.no_llm_query_rewrite,
+        generate_comparison_insights=not args.no_comparison_insights,
         include_recommended_resource_links=not args.no_recommended_resource_links,
         recommended_resource_ids=args.recommended_resources or [],
         fetch_excerpts=not args.no_fetch_excerpts,
@@ -67,6 +69,10 @@ def main() -> int:
         "deep_results": len(run.deep_results),
         "deep_search_limit": run.request.deep_search_limit,
         "pdf_report": str(run.report_pdf_path) if run.report_pdf_path else None,
+        "docx_report": str(run.report_docx_path) if run.report_docx_path else None,
+        "links_report": str(run.links_report_docx_path) if run.links_report_docx_path else None,
+        "deep_report": str(run.deep_report_docx_path) if run.deep_report_docx_path else None,
+        "full_run_json": str(run.full_run_json_path) if run.full_run_json_path else None,
         "warnings": run.warnings,
     }
     if args.json:
@@ -81,6 +87,8 @@ def main() -> int:
         print(f"Deep-search limit: {run.request.deep_search_limit}")
         if run.report_pdf_path:
             print(f"PDF report: {run.report_pdf_path}")
+        if run.report_docx_path:
+            print(f"DOCX report: {run.report_docx_path}")
         for warning in run.warnings:
             print(f"Warning: {warning}")
         for index, result in enumerate(run.results[: min(args.top_k, 10)], start=1):

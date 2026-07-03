@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.io_utils import write_jsonl
-from app.query.reports import build_pdf_report, run_overall_summary
+from app.query import reports as report_builders
 from app.query.rewrite import deterministic_query_rewrite, rewrite_query
 from app.settings import PROJECT_ROOT
 from app.web_search.clients import LiteratureSearchClient
@@ -41,92 +41,6 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
-def build_literature_report(run: LiteratureSearchRun) -> str:
-    lines = [
-        "# Literature Search Report",
-        "",
-        f"Query: {run.request.query}",
-        f"Corrected query: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}",
-        f"Materials-only search: {run.request.materials_only}",
-        f"Keywords: {', '.join(run.keywords) if run.keywords else 'n/a'}",
-        f"External results: {len(run.results)}",
-        f"Local matches: {len(run.local_matches)}",
-        f"Recommended resource links: {len(run.resource_links)}",
-        f"Deep-search summaries: {len(run.deep_results)}",
-        "",
-        "## Overall Summary",
-        "",
-        run_overall_summary(run),
-    ]
-    if run.query_plan:
-        lines.extend(
-            [
-                "",
-                "## Query Rewrite Plan",
-                "",
-                "Search queries:",
-                *(f"- {item}" for item in run.query_plan.get("search_queries", [])),
-            ]
-        )
-    lines.extend(
-        [
-        "",
-        "## Top External Sources",
-        ]
-    )
-    for index, result in enumerate(run.results[:10], start=1):
-        url = str(result.url) if result.url else ""
-        doi = f" DOI: {result.doi}." if result.doi else ""
-        quartile = result.raw.get("journal_quartile") if result.raw else None
-        quartile_text = f" Quartile: {quartile}." if quartile else ""
-        lines.append(f"{index}. {result.title} ({result.year or 'n.d.'}). {result.venue or result.source}.{doi}{quartile_text} {url}".strip())
-    if run.resource_links:
-        lines.extend(["", "## Recommended Resource Search Links"])
-        for row in run.resource_links[:40]:
-            status = "" if row.get("enabled") else " (not integrated)"
-            note = f" — {row.get('note')}" if row.get("note") else ""
-            lines.append(f"- {row.get('name')}{status}: {row.get('url')}{note}")
-    if run.deep_results:
-        lines.extend(["", "## Deep Search Summaries"])
-        for item in run.deep_results:
-            summary = item.document_summary or {}
-            url = str(item.source_result.url) if item.source_result.url else ""
-            lines.extend(
-                [
-                    "",
-                    f"### {item.source_result.title}",
-                    f"URL: {url}" if url else "URL: n/a",
-                    f"Status: {item.status}; procedures: {len(item.procedure_summaries)}",
-                    compact_report_text(summary.get("summary") or summary.get("main_topic") or "No summary extracted.", 1200),
-                ]
-            )
-    if run.comparison:
-        lines.extend(
-            [
-                "",
-                "## Method Comparison",
-                f"Confirmed methods: {len(run.comparison.confirmed_methods)}",
-                f"Local-only methods: {len(run.comparison.local_only_methods)}",
-                f"Web-only methods: {len(run.comparison.web_only_methods)}",
-                f"Differing conditions: {len(run.comparison.differing_conditions)}",
-                "",
-                "## Gaps",
-            ]
-        )
-        lines.extend(f"- {gap}" for gap in run.comparison.gaps)
-    if run.warnings:
-        lines.extend(["", "## Warnings"])
-        lines.extend(f"- {warning}" for warning in run.warnings)
-    return "\n".join(lines).strip() + "\n"
-
-
-def compact_report_text(value: Any, max_chars: int) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    if len(text) > max_chars:
-        return text[: max_chars - 3].rstrip() + "..."
-    return text
-
-
 def write_run_outputs(run: LiteratureSearchRun, output_dir: Path) -> LiteratureSearchRun:
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "request.json", run.request.model_dump(mode="json"))
@@ -137,13 +51,42 @@ def write_run_outputs(run: LiteratureSearchRun, output_dir: Path) -> LiteratureS
     write_jsonl(output_dir / "resource_links.jsonl", run.resource_links)
     if run.comparison:
         write_json(output_dir / "comparison_report.json", run.comparison.model_dump(mode="json"))
-    report = build_literature_report(run)
-    (output_dir / "literature_report.md").write_text(report, encoding="utf-8")
+
+    report = report_builders.build_literature_report(run)
+    links_report = report_builders.build_links_report(run)
+    deep_report = report_builders.build_deep_report(run)
+    report_builders.write_text_report(output_dir / "literature_report.md", report)
+    report_builders.write_text_report(output_dir / "literature_links_report.md", links_report)
+    report_builders.write_text_report(output_dir / "deep_search_report.md", deep_report)
+    report_builders.write_json_report(output_dir / "full_run.json", report_builders.build_full_run_payload(run))
+
     run.output_dir = output_dir
     run.report_markdown = report
+    run.links_report_markdown = links_report
+    run.deep_report_markdown = deep_report
+    run.full_run_json_path = output_dir / "full_run.json"
     if run.request.generate_pdf_report:
-        run.report_pdf_path = build_pdf_report(run, output_dir / "literature_report.pdf")
+        run.report_pdf_path = report_builders.build_pdf_report(run, output_dir / "literature_report.pdf", mode="full")
+        run.links_report_pdf_path = report_builders.build_pdf_report(run, output_dir / "literature_links_report.pdf", mode="links")
+        run.deep_report_pdf_path = report_builders.build_pdf_report(run, output_dir / "deep_search_report.pdf", mode="deep")
+    run.report_docx_path = report_builders.build_docx_report(run, output_dir / "literature_report.docx", mode="full")
+    run.links_report_docx_path = report_builders.build_docx_report(run, output_dir / "literature_links_report.docx", mode="links")
+    run.deep_report_docx_path = report_builders.build_docx_report(run, output_dir / "deep_search_report.docx", mode="deep")
     return run
+
+
+def publication_records(project_root: Path, include_local_search: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    publications_dir = project_root / "data" / "processed" / "publications"
+    local_publications, local_document_summaries, local_procedures = load_local_publication_records(publications_dir)
+    if not include_local_search:
+        return [], [], []
+    return local_publications, local_document_summaries, local_procedures
+
+
+def yandex_client(project_root: Path, yandex_client_arg: Any | None = None) -> Any | None:
+    if yandex_client_arg is not None:
+        return yandex_client_arg
+    return build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
 
 
 def run_literature_search(
@@ -154,9 +97,9 @@ def run_literature_search(
     output_root: Path | None = None,
     yandex_client: Any | None = None,
 ) -> LiteratureSearchRun:
-    rewrite_client = None
-    if request.use_llm_query_rewrite:
-        rewrite_client = yandex_client if yandex_client is not None else build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
+    rewrite_client = yandex_client if request.use_llm_query_rewrite else None
+    if request.use_llm_query_rewrite and rewrite_client is None:
+        rewrite_client = build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
     query_plan = (
         rewrite_query(
             request.query,
@@ -172,10 +115,7 @@ def run_literature_search(
     run_id = safe_run_id(request.run_id or utc_run_id(request.query))
     output_dir = output_root / run_id
 
-    publications_dir = project_root / "data" / "processed" / "publications"
-    local_publications, local_document_summaries, local_procedures = load_local_publication_records(publications_dir)
-    if not request.include_local_search:
-        local_publications, local_document_summaries, local_procedures = [], [], []
+    local_publications, local_document_summaries, local_procedures = publication_records(project_root, request.include_local_search)
     local_matches = []
     if request.include_local_search:
         local_matches = search_local_summaries(
@@ -209,9 +149,7 @@ def run_literature_search(
 
     deep_results = []
     if request.deep_search == "top5":
-        llm_client = yandex_client if yandex_client is not None else rewrite_client
-        if llm_client is None:
-            llm_client = build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
+        llm_client = yandex_client or rewrite_client or build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
         deep_results = run_deep_search(
             results=results,
             output_dir=output_dir,
@@ -239,3 +177,45 @@ def run_literature_search(
         warnings=warnings,
     )
     return write_run_outputs(run, output_dir)
+
+
+def run_deep_search_for_existing_run(
+    run: LiteratureSearchRun,
+    *,
+    project_root: Path = PROJECT_ROOT,
+    deep_search_limit: int | None = None,
+    fetch_excerpts: bool | None = None,
+    yandex_client: Any | None = None,
+) -> LiteratureSearchRun:
+    request = run.request.model_copy(
+        update={
+            "deep_search": "top5",
+            "deep_search_limit": deep_search_limit or run.request.deep_search_limit,
+            "fetch_excerpts": run.request.fetch_excerpts if fetch_excerpts is None else fetch_excerpts,
+        }
+    )
+    output_dir = run.output_dir or (project_root / "data" / "processed" / "web_search" / safe_run_id(request.run_id or utc_run_id(request.query)))
+    local_publications, _, local_procedures = publication_records(project_root, request.include_local_search)
+    deep_results = run_deep_search(
+        results=run.results,
+        output_dir=output_dir,
+        mode="top5",
+        client=yandex_client if yandex_client is not None else build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json"),
+        fetch_excerpts=request.fetch_excerpts,
+        limit=request.deep_search_limit,
+    )
+    comparison = compare_methods(
+        query=request.query,
+        local_publications=local_publications,
+        local_procedures=local_procedures,
+        web_deep_results=deep_results,
+    )
+    updated = run.model_copy(
+        update={
+            "request": request,
+            "deep_results": deep_results,
+            "comparison": comparison,
+        },
+        deep=True,
+    )
+    return write_run_outputs(updated, output_dir)

@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.query.literature import run_literature_search  # noqa: E402
-from app.query.reports import run_overall_summary  # noqa: E402
+from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
+from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
 
 
@@ -115,6 +115,11 @@ def render_warnings(warnings: list[str]) -> None:
             st.warning(warning)
 
 
+def download_path_button(label: str, path: Any, *, file_name: str, mime: str) -> None:
+    if path and Path(path).exists():
+        st.download_button(label, data=Path(path).read_bytes(), file_name=file_name, mime=mime)
+
+
 def render_run(run: Any) -> None:
     st.session_state["last_run"] = run
     tabs = st.tabs(["Ответ", "Публикации", "Deep Search", "Сравнение", "Evidence", "Графики", "Отчет"])
@@ -172,9 +177,22 @@ def render_run(run: Any) -> None:
     with tabs[2]:
         if run.request.deep_search != "top5":
             st.info("Deep Search не запускался. Включите `Deep search` в sidebar и повторите запрос.")
+            if run.results and st.button("Запустить Deep Search по текущим результатам", type="primary"):
+                with st.spinner("Запускаю Deep Search по уже найденным статьям..."):
+                    updated = run_deep_search_for_existing_run(
+                        run,
+                        deep_search_limit=st.session_state.get("deep_search_limit_setting", run.request.deep_search_limit),
+                        fetch_excerpts=st.session_state.get("fetch_excerpts_setting", run.request.fetch_excerpts),
+                    )
+                st.session_state["last_run"] = updated
+                st.rerun()
         else:
             st.subheader("Общий вывод по найденным статьям")
             st.write(run_overall_summary(run))
+            insights = comparison_insights(run)
+            if insights:
+                st.subheader("Выводы по сравнению локального и web-поиска")
+                st.write(insights)
             st.write("Summary по отдельным статьям")
             render_table(deep_rows(run), empty_text="Deep Search запущен, но summaries не извлечены.")
             for item in run.deep_results:
@@ -223,19 +241,73 @@ def render_run(run: Any) -> None:
             st.bar_chart(coverage)
 
     with tabs[6]:
-        st.download_button(
-            "Download report",
-            data=run.report_markdown or "",
-            file_name="literature_report.md",
-            mime="text/markdown",
-        )
-        if run.report_pdf_path and Path(run.report_pdf_path).exists():
-            st.download_button(
-                "Download PDF report",
-                data=Path(run.report_pdf_path).read_bytes(),
-                file_name="literature_report.pdf",
-                mime="application/pdf",
+        st.subheader("Полный отчет")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.download_button("Markdown", data=run.report_markdown or "", file_name="literature_report.md", mime="text/markdown")
+        with col2:
+            download_path_button("PDF", run.report_pdf_path, file_name="literature_report.pdf", mime="application/pdf")
+        with col3:
+            download_path_button(
+                "DOCX",
+                run.report_docx_path,
+                file_name="literature_report.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
+        with col4:
+            download_path_button("JSON", run.full_run_json_path, file_name="full_run.json", mime="application/json")
+
+        st.subheader("Обычный отчет: только ссылки")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button("Markdown links", data=run.links_report_markdown or "", file_name="literature_links_report.md", mime="text/markdown")
+        with col2:
+            download_path_button("PDF links", run.links_report_pdf_path, file_name="literature_links_report.pdf", mime="application/pdf")
+        with col3:
+            download_path_button(
+                "DOCX links",
+                run.links_report_docx_path,
+                file_name="literature_links_report.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+        st.subheader("Deep Search отчет: ссылки и summary")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button("Markdown Deep Search", data=run.deep_report_markdown or "", file_name="deep_search_report.md", mime="text/markdown")
+        with col2:
+            download_path_button("PDF Deep Search", run.deep_report_pdf_path, file_name="deep_search_report.pdf", mime="application/pdf")
+        with col3:
+            download_path_button(
+                "DOCX Deep Search",
+                run.deep_report_docx_path,
+                file_name="deep_search_report.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+        st.subheader("Графики для отчета")
+        year_df = pd.DataFrame(year_counts(run))
+        source_df = pd.DataFrame(source_counts(run))
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("Публикации по годам")
+            if not year_df.empty:
+                st.bar_chart(year_df.set_index("year"))
+                st.download_button("CSV years", data=year_df.to_csv(index=False), file_name="publication_years.csv", mime="text/csv")
+            else:
+                st.info("Нет данных по годам.")
+        with col2:
+            st.write("Публикации по базам данных")
+            if not source_df.empty:
+                st.bar_chart(source_df.set_index("source"))
+                st.download_button("CSV sources", data=source_df.to_csv(index=False), file_name="publication_sources.csv", mime="text/csv")
+            else:
+                st.info("Нет данных по базам.")
+
+        insights = comparison_insights(run)
+        if insights:
+            st.subheader("Выводы по сравнению трендов/методик/условий")
+            st.write(insights)
         st.markdown(run.report_markdown or "")
 
 
@@ -264,7 +336,7 @@ def main() -> None:
             st.caption("arXiv может отвечать медленнее остальных источников.")
         top_k = st.slider("Top K", min_value=5, max_value=50, value=20, step=5)
         deep_search = st.checkbox("Deep search", value=False)
-        max_deep = max(1, min(top_k, 15))
+        max_deep = max(1, min(top_k, 20))
         deep_search_limit = st.slider(
             "Статей для Deep Search",
             min_value=1,
@@ -278,7 +350,11 @@ def main() -> None:
         materials_only = st.checkbox("Materials science only", value=True)
         query_rewrite = st.checkbox("Rewrite/multiply query", value=True)
         llm_query_rewrite = st.checkbox("Use LLM rewrite if available", value=True, disabled=not query_rewrite)
+        generate_comparison_insights = st.checkbox("Генерировать выводы по сравнению", value=True)
         language = st.selectbox("Language", options=["auto", "ru", "en"], index=0)
+
+    st.session_state["deep_search_limit_setting"] = deep_search_limit
+    st.session_state["fetch_excerpts_setting"] = fetch_excerpts
 
     if "history" not in st.session_state:
         st.session_state["history"] = []
@@ -302,6 +378,7 @@ def main() -> None:
             materials_only=materials_only,
             use_query_rewrite=query_rewrite,
             use_llm_query_rewrite=llm_query_rewrite,
+            generate_comparison_insights=generate_comparison_insights,
             include_recommended_resource_links=False,
             recommended_resource_ids=[],
             fetch_excerpts=fetch_excerpts,
