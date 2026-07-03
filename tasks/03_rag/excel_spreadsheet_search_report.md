@@ -1,6 +1,16 @@
-# Excel Spreadsheet Search Report
+# Отчет по Excel Spreadsheet Search
 
 Дата: 2026-07-03.
+
+Статус: реализовано и подготовлено к использованию в RAG/answer layer.
+
+## Краткий итог
+
+Excel-файлы теперь обрабатываются как отдельный retrieval слой поверх уже
+созданных CSV-выгрузок. Мы не эмбеддим все ячейки и не перегружаем основной
+RAG-index: chunks/table previews находят релевантный workbook или sheet, а
+`search_spreadsheets.py` точечно читает полный CSV и возвращает строки для
+ответа.
 
 ## Задача
 
@@ -27,6 +37,13 @@ parsed artifacts:
 ```powershell
 .\.venv\Scripts\python.exe scripts\search_spreadsheets.py "Nickel 2012" --doc-id 486b2a745dcf8685 --top-k 3
 ```
+
+Ключевые файлы:
+
+- `app/index/spreadsheet_store.py` - API для листов, preview и поиска строк;
+- `scripts/search_spreadsheets.py` - CLI для ручного и программного запуска;
+- `tests/test_spreadsheet_store.py` - focused tests контракта;
+- `tasks/03_rag/README.md` - место интеграции в RAG-документации.
 
 ## Как использовать в RAG
 
@@ -99,6 +116,24 @@ JSON-вывод для GUI/answer layer:
   распознавать колонки/единицы измерения и применять typed comparisons после
   выбора листа.
 
+## Рекомендованный контракт для GUI/answer layer
+
+Использовать JSON-вывод CLI или напрямую `SpreadsheetStore.search_rows()`.
+Минимальный полезный payload для ответа:
+
+- `doc_id`;
+- `file_name`;
+- `source_path`;
+- `sheet_name`;
+- `row_number`;
+- `row_text` или массив `row`;
+- `csv_path`;
+- `matched_terms`;
+- `score`.
+
+Не передавать в LLM весь CSV. Если нужно больше контекста, расширять окно вокруг
+найденной строки отдельным helper-ом, а не подмешивать весь workbook.
+
 ## Проверка
 
 Запускались:
@@ -114,5 +149,9 @@ JSON-вывод для GUI/answer layer:
 
 - compileall прошел;
 - focused tests: 4 passed;
-- весь pytest suite: 24 passed, 2 deprecation warnings из `bs4/lxml`;
+- весь pytest suite: 26 passed, 2 deprecation warnings из `bs4/lxml`;
 - smoke CLI на реальных Excel CSV вернул строки из `CopperMonitor2012DecData.xlsx`.
+
+## Публикация
+
+Рабочая ветка: `codex/rag-excel-search`.
