@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pandas as pd
+
+from app.market.charts import prepare_market_chart_df
 from app.market.normalization import normalize_unit_value
 from app.market.radar import detect_market_query, run_market_radar
 
@@ -47,3 +50,39 @@ def test_short_chemical_alias_does_not_match_inside_words() -> None:
 
     assert "copper" in detected.commodities
     assert "cobalt" not in detected.commodities
+
+
+def test_market_chart_single_row_has_flat_string_columns() -> None:
+    chart_df = prepare_market_chart_df(
+        [{"period": "2024", "entity": "Russia", "commodity": "nickel", "value": 220, "unit": "kt"}],
+        index="period",
+        columns=["entity", "commodity"],
+    )
+
+    assert not chart_df.empty
+    assert not isinstance(chart_df.columns, pd.MultiIndex)
+    assert list(chart_df.columns) == ["Russia · nickel"]
+    assert list(chart_df.index) == ["2024"]
+
+
+def test_market_chart_multiple_commodities_flattens_columns() -> None:
+    chart_df = prepare_market_chart_df(
+        [
+            {"period": "2024", "entity": "Nornickel", "commodity": "nickel", "value": 205},
+            {"period": "2024", "entity": "Nornickel", "commodity": "copper", "value": 433},
+            {"period": "2024", "entity": "Russia", "commodity": "nickel", "value": 220},
+        ],
+        index="period",
+        columns=["entity", "commodity"],
+    )
+
+    assert not chart_df.empty
+    assert not isinstance(chart_df.columns, pd.MultiIndex)
+    assert set(chart_df.columns) == {"Nornickel · copper", "Nornickel · nickel", "Russia · nickel"}
+    assert all(isinstance(column, str) for column in chart_df.columns)
+
+
+def test_market_chart_empty_data_is_empty_dataframe() -> None:
+    chart_df = prepare_market_chart_df([], index="period", columns=["entity", "commodity"])
+
+    assert chart_df.empty

@@ -39,6 +39,7 @@ from app.query.planner import plan_query  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
 from app.graph.search import load_graph, neighbors as graph_neighbors, paths_to_types, search_entities  # noqa: E402
+from app.market.charts import prepare_market_chart_df  # noqa: E402
 from app.market.radar import run_market_radar  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
 
@@ -426,19 +427,15 @@ def render_market_radar_result(result: Any) -> None:
     with tabs[1]:
         time_series = charts.get("time_series") or []
         if time_series:
-            df = pd.DataFrame(time_series)
-            df["value"] = pd.to_numeric(df["value"], errors="coerce")
-            chart_df = df.pivot_table(index="period", columns=["entity", "commodity"], values="value", aggfunc="first")
-            st.line_chart(chart_df)
+            chart_df = prepare_market_chart_df(time_series, index="period", columns=["entity", "commodity"])
+            render_market_chart(chart_df, chart_type="line", empty_message="Not enough data for time series chart.")
             render_table(time_series)
         else:
-            st.info("Нет временного ряда для графика.")
+            st.info("Not enough data for time series chart.")
     with tabs[2]:
         if latest_rows:
-            df = pd.DataFrame(latest_rows)
-            df["value"] = pd.to_numeric(df["value"], errors="coerce")
-            chart_df = df.pivot_table(index="entity", columns="commodity", values="value", aggfunc="first")
-            st.bar_chart(chart_df)
+            chart_df = prepare_market_chart_df(latest_rows, index="entity", columns="commodity")
+            render_market_chart(chart_df, chart_type="bar", empty_message="Not enough data for comparison chart.")
             render_table(latest_rows)
         else:
             st.info("Нет сопоставимых KPI для comparison chart.")
@@ -458,6 +455,21 @@ def render_market_radar_result(result: Any) -> None:
             st.info("Связанные внутренние термины появятся для Ni/Cu/PGM или запросов со словом «свяжи».")
     with tabs[6]:
         st.json(payload)
+
+
+def render_market_chart(chart_df: pd.DataFrame, *, chart_type: str, empty_message: str) -> None:
+    if chart_df.empty:
+        st.info(empty_message)
+        return
+    try:
+        if chart_type == "bar":
+            st.bar_chart(chart_df)
+        else:
+            st.line_chart(chart_df)
+    except Exception as exc:  # pragma: no cover - Streamlit rendering errors are UI-runtime specific.
+        st.warning(f"Chart preview is unavailable: {exc}")
+        with st.expander("Chart data preview", expanded=False):
+            render_table(chart_df.reset_index().to_dict(orient="records"))
 
 
 def render_market_radar_panel(*, safe_demo_mode: bool) -> None:
