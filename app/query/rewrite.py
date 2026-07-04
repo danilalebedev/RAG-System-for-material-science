@@ -87,7 +87,7 @@ def deterministic_query_rewrite(query: str, *, materials_only: bool = True) -> Q
 def build_rewrite_prompt(query: str, *, materials_only: bool) -> str:
     scope = "materials science, metallurgy, mineral processing, alloys, ores, hydrometallurgy"
     return f"""
-Ты query rewrite engine для R&D поиска по публикациям и RAG.
+Ты query rewrite engine для R&D-поиска по публикациям и RAG.
 Нужно исправить запрос пользователя, выделить материалы/процессы/свойства и
 сгенерировать несколько поисковых формулировок для scholarly search.
 
@@ -95,7 +95,7 @@ def build_rewrite_prompt(query: str, *, materials_only: bool) -> str:
 - Не отвечай на вопрос, только перепиши запрос.
 - Область поиска: {scope if materials_only else "general scholarly search"}.
 - Сделай русский и английский варианты, если исходный запрос русский.
-- Search queries должны быть короткими, пригодными для Crossref/Semantic Scholar.
+- Search queries должны быть короткими и пригодными для Crossref/Semantic Scholar/OpenAlex.
 - Не добавляй фактов, которых нет в запросе.
 
 Верни только JSON:

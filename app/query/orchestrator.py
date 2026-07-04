@@ -26,9 +26,10 @@ from app.settings import PROJECT_ROOT
 from app.web_search.schemas import DEFAULT_SEARCH_SOURCES, LiteratureSearchRequest, LiteratureSearchRun, SearchSource
 
 
-ORCHESTRATION_SYSTEM_PROMPT = """Ты RAG-ассистент для научно-технического корпуса.
+ORCHESTRATION_SYSTEM_PROMPT = """Ты RAG-ассистент для научно-технического корпуса по материаловедению, металлургии и горному делу.
 Отвечай только по retrieved evidence. Если данных недостаточно, скажи об этом явно.
-Для сравнений методик используй таблицы и summary/procedure evidence, не выдумывай числа."""
+Для сравнений методик используй summary/procedure evidence, raw-фрагменты и таблицы. Не выдумывай численные значения, условия, оборудование и ссылки.
+Структурируй ответ по-русски: краткий вывод, подтверждающие источники, ограничения и следующие шаги."""
 
 
 @dataclass(frozen=True)
@@ -407,6 +408,7 @@ def run_web_route(
     web_sources: list[SearchSource] | None,
     web_top_k: int,
     web_deep_search: bool,
+    web_deep_search_limit: int,
     generate_pdf_report: bool,
     fallbacks: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], LiteratureSearchRun | None]:
@@ -419,7 +421,7 @@ def run_web_route(
         top_k=web_top_k,
         sources=web_sources or DEFAULT_SEARCH_SOURCES.copy(),
         deep_search="top5" if web_deep_search else "none",
-        deep_search_limit=min(max(web_top_k, 1), 5),
+        deep_search_limit=min(max(web_deep_search_limit, 1), 20),
         include_local_search=False,
         use_query_rewrite=True,
         use_llm_query_rewrite=False,
@@ -438,6 +440,7 @@ def run_query_orchestration(
     web_sources: list[SearchSource] | None = None,
     web_top_k: int = 10,
     web_deep_search: bool = False,
+    web_deep_search_limit: int = 5,
     generate_pdf_report: bool = False,
     required_routes: list[RouteName] | None = None,
 ) -> QueryOrchestrationResult:
@@ -470,6 +473,7 @@ def run_query_orchestration(
             web_sources=web_sources,
             web_top_k=web_top_k,
             web_deep_search=web_deep_search,
+            web_deep_search_limit=web_deep_search_limit,
             generate_pdf_report=generate_pdf_report,
             fallbacks=fallbacks,
         )

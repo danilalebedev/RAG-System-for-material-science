@@ -11,6 +11,7 @@ from typing import Any
 from app.io_utils import write_jsonl
 from app.query import reports as report_builders
 from app.query.planner import QueryPlan, plan_query
+from app.query.rewrite import deterministic_query_rewrite, rewrite_query
 from app.settings import PROJECT_ROOT
 from app.web_search.clients import LiteratureSearchClient
 from app.web_search.comparison import (
@@ -149,10 +150,37 @@ def run_literature_search(
     yandex_client: Any | None = None,
 ) -> LiteratureSearchRun:
     query_plan = plan_query(request.query)
-    keywords = plan_keywords(query_plan, request.query)
+    rewrite_client = yandex_client if request.use_llm_query_rewrite else None
+    rewrite_plan = (
+        rewrite_query(
+            request.query,
+            client=rewrite_client,
+            materials_only=request.materials_only,
+            use_llm=bool(rewrite_client and request.use_llm_query_rewrite),
+        )
+        if request.use_query_rewrite
+        else deterministic_query_rewrite(request.query, materials_only=request.materials_only)
+    )
+    keywords = list(
+        dict.fromkeys(
+            plan_keywords(query_plan, request.query)
+            + rewrite_plan.keywords_ru
+            + rewrite_plan.keywords_en
+            + rewrite_plan.material_terms
+            + rewrite_plan.process_terms
+            + rewrite_plan.property_terms
+        )
+    )
     local_query = first_variant(query_plan.internal_search_queries, query_plan.original_query)
-    web_query = first_variant(query_plan.web_search_queries, query_plan.original_query)
-    web_variants = query_plan.web_search_queries or query_plan.rewritten_queries.web or [web_query]
+    web_query = rewrite_plan.corrected_query or first_variant(query_plan.web_search_queries, query_plan.original_query)
+    web_variants = list(
+        dict.fromkeys(
+            rewrite_plan.search_queries
+            + query_plan.web_search_queries
+            + query_plan.rewritten_queries.web
+            + [web_query]
+        )
+    )
     output_root = output_root or (project_root / "data" / "processed" / "web_search")
     run_id = safe_run_id(request.run_id or utc_run_id(request.query))
     output_dir = output_root / run_id
@@ -212,7 +240,11 @@ def run_literature_search(
     )
     run = LiteratureSearchRun(
         request=request,
-        query_plan=query_plan.model_dump(mode="json"),
+        query_plan={
+            **query_plan.model_dump(mode="json"),
+            "original_user_query": request.query,
+            "llm_rewrite": rewrite_plan.model_dump(mode="json"),
+        },
         keywords=keywords,
         results=results,
         local_matches=local_matches,
