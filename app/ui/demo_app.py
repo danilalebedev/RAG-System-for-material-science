@@ -39,6 +39,7 @@ from app.query.planner import plan_query  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
 from app.graph.search import load_graph, neighbors as graph_neighbors, paths_to_types, search_entities  # noqa: E402
+from app.market.radar import run_market_radar  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
 
 
@@ -48,6 +49,7 @@ GRAPH_EDGES_PATH = ROOT / "data" / "index" / "knowledge_graph_edges.jsonl"
 CHUNKS_PATH = ROOT / "data" / "parsed" / "chunks.jsonl"
 DOCUMENTS_PATH = ROOT / "data" / "parsed" / "documents.jsonl"
 TABLES_PATH = ROOT / "data" / "parsed" / "tables.jsonl"
+MARKET_MODE = "Рыночная разведка"
 
 
 DEMO_PROMPTS = {
@@ -75,6 +77,15 @@ DEMO_PROMPTS = {
         "Найди свежие публикации про извлечение никеля из хвостов",
     ],
 }
+MARKET_DEMO_PROMPTS = [
+    "Сколько никеля, меди, палладия и платины произвёл Норникель в последнем доступном периоде?",
+    "Покажи динамику производства Ni/Cu/Pd/Pt Норникеля по годам.",
+    "Сравни производство стали в России, Китае, Индии и Турции.",
+    "Покажи мировое производство алюминия по регионам.",
+    "Покажи топ стран по добыче никеля и роль России.",
+    "Свяжи рыночные данные по никелю с внутренними документами по никелевой руде и сульфидным концентратам.",
+]
+
 DEMO_SCENARIO_GALLERY = [
     {
         "label": "Сравнить методы переработки LIB для извлечения Ni и Co",
@@ -211,6 +222,8 @@ def render_hero() -> None:
 def apply_demo_scenario(query: str, mode: str) -> None:
     st.session_state["rd_question"] = query
     st.session_state["active_demo_mode"] = mode
+    if mode == MARKET_MODE:
+        st.session_state["market_query"] = query
     if mode == "Сравнение методик":
         st.session_state["comparison_query"] = query
 
@@ -218,7 +231,12 @@ def apply_demo_scenario(query: str, mode: str) -> None:
 def render_demo_scenario_gallery() -> None:
     st.markdown('<div class="section-label">Demo scenarios</div>', unsafe_allow_html=True)
     columns = st.columns(5)
-    for index, scenario in enumerate(DEMO_SCENARIO_GALLERY):
+    market_scenarios = [
+        {"label": "Market Radar: Норникель Ni/Cu/PGM", "query": MARKET_DEMO_PROMPTS[0], "mode": MARKET_MODE},
+        {"label": "Market Radar: сталь по странам", "query": MARKET_DEMO_PROMPTS[2], "mode": MARKET_MODE},
+        {"label": "Market Radar: алюминий по регионам", "query": MARKET_DEMO_PROMPTS[3], "mode": MARKET_MODE},
+    ]
+    for index, scenario in enumerate(DEMO_SCENARIO_GALLERY + market_scenarios):
         with columns[index % 5]:
             st.button(
                 scenario["label"],
@@ -250,6 +268,7 @@ def render_mode_cards() -> None:
         ("Граф знаний", "Показать связи Materials / Processes / Properties / Publications."),
         ("Внутреннее vs внешнее", "Сопоставить локальные данные с открытыми публикациями."),
     ]
+    cards.append((MARKET_MODE, "Публичные production-данные, источники, KPI, динамика и рыночные caveats."))
     columns = st.columns(len(cards))
     for column, (title, text) in zip(columns, cards):
         column.markdown(f'<div class="rd-card"><strong>{title}</strong><span>{text}</span></div>', unsafe_allow_html=True)
@@ -378,6 +397,94 @@ def render_route_orchestration_result(result: Any) -> None:
             render_table(fallbacks)
         else:
             st.success("Все выбранные источники поиска отработали без резервного режима.")
+
+
+def render_market_radar_result(result: Any) -> None:
+    payload = result.as_dict() if hasattr(result, "as_dict") else dict(result or {})
+    rows = payload.get("production_rows") or []
+    statuses = payload.get("source_status") or []
+    charts = payload.get("charts") or {}
+
+    st.markdown('<div class="section-label">Executive summary</div>', unsafe_allow_html=True)
+    st.write(payload.get("market_summary") or "Market summary is not available.")
+
+    latest_rows = charts.get("latest_comparison") or []
+    if latest_rows:
+        st.markdown('<div class="section-label">KPI cards</div>', unsafe_allow_html=True)
+        columns = st.columns(min(4, len(latest_rows)))
+        for index, row in enumerate(latest_rows[:8]):
+            with columns[index % len(columns)]:
+                st.metric(
+                    label=f"{row.get('entity')} · {row.get('commodity')}",
+                    value=f"{row.get('value')} {row.get('unit')}",
+                    delta=str(row.get("period") or ""),
+                )
+
+    tabs = st.tabs(["Production table", "Time series", "Comparison", "Source status", "Caveats", "Internal links", "JSON"])
+    with tabs[0]:
+        render_table(rows, empty_text="Production rows не найдены для выбранных фильтров.")
+    with tabs[1]:
+        time_series = charts.get("time_series") or []
+        if time_series:
+            df = pd.DataFrame(time_series)
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            chart_df = df.pivot_table(index="period", columns=["entity", "commodity"], values="value", aggfunc="first")
+            st.line_chart(chart_df)
+            render_table(time_series)
+        else:
+            st.info("Нет временного ряда для графика.")
+    with tabs[2]:
+        if latest_rows:
+            df = pd.DataFrame(latest_rows)
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            chart_df = df.pivot_table(index="entity", columns="commodity", values="value", aggfunc="first")
+            st.bar_chart(chart_df)
+            render_table(latest_rows)
+        else:
+            st.info("Нет сопоставимых KPI для comparison chart.")
+    with tabs[3]:
+        render_table(statuses, empty_text="Статусы источников не сформированы.")
+    with tabs[4]:
+        caveats = [{"type": "missing_data", "message": item} for item in payload.get("missing_data") or []]
+        caveats += [{"type": "warning", "message": item} for item in payload.get("warnings") or []]
+        caveats += [{"type": "suggested_source", "message": item} for item in payload.get("suggested_sources") or []]
+        render_table(caveats, empty_text="Критичных caveats нет. Для продакшена всё равно проверьте свежие официальные отчёты.")
+    with tabs[5]:
+        terms = payload.get("internal_knowledge_terms") or []
+        if terms:
+            render_chip_row([_chip("internal term", term, "route") for term in terms])
+            st.caption("Эти термины можно отправить в Local Knowledge / Graph для связки рынка с внутренними документами.")
+        else:
+            st.info("Связанные внутренние термины появятся для Ni/Cu/PGM или запросов со словом «свяжи».")
+    with tabs[6]:
+        st.json(payload)
+
+
+def render_market_radar_panel(*, safe_demo_mode: bool) -> None:
+    st.subheader("Market Radar / Рыночная разведка")
+    st.caption("Официальные и demo-safe production данные: компании, страны, commodities, периоды, источники и caveats.")
+    render_prompt_buttons(MARKET_DEMO_PROMPTS, target_key="market_query", prefix="market")
+    query = st.text_area(
+        "Market intelligence query",
+        key="market_query",
+        height=82,
+        placeholder="Например: Сколько никеля, меди, палладия и платины произвёл Норникель?",
+    )
+    col_run, col_note = st.columns([1, 3])
+    with col_run:
+        run_market = st.button("Run Market Radar", type="primary", key="run_market_radar", use_container_width=True)
+    with col_note:
+        st.caption("Числа берутся из структурированных строк источников/fixtures; LLM не используется для numeric facts.")
+
+    if run_market:
+        if not query:
+            st.warning("Введите market query или выберите demo prompt.")
+        else:
+            with st.spinner("Collecting public production indicators..."):
+                st.session_state["last_market_radar_result"] = run_market_radar(query, demo_mode=safe_demo_mode)
+            render_market_radar_result(st.session_state["last_market_radar_result"])
+    elif st.session_state.get("last_market_radar_result"):
+        render_market_radar_result(st.session_state["last_market_radar_result"])
 
 
 def render_comparison_mode_result(result: Any) -> None:
@@ -1192,6 +1299,7 @@ def main() -> None:
 
     render_demo_scenario_gallery()
     mode_options = ["Быстрый поиск", "Сравнение методик", "Табличные данные", "Граф знаний", "Внутреннее vs внешнее"]
+    mode_options.append(MARKET_MODE)
     active_mode = st.session_state.get("active_demo_mode", mode_options[0])
     if active_mode not in mode_options:
         active_mode = mode_options[0]
@@ -1214,6 +1322,10 @@ def main() -> None:
     with feature_tabs[4]:
         render_prompt_buttons(DEMO_PROMPTS["web_local"], target_key="rd_question", prefix="web_local")
         st.caption("Для внешних публикаций включите web search в sidebar; локальный контекст останется рядом с web evidence.")
+
+    market_tab = st.tabs([MARKET_MODE])
+    with market_tab[0]:
+        render_market_radar_panel(safe_demo_mode=safe_demo_mode)
 
     st.subheader("R&D Decision Cockpit")
     rd_question = st.text_area(
