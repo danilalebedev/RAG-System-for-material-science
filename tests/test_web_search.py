@@ -45,6 +45,7 @@ from app.query.reports import (
     compact_text,
     comparison_insights,
     literature_graph_markdown,
+    markdown_to_docx,
     property_report_markdown,
     property_report_rows_from_run,
     relevance_confidence,
@@ -928,6 +929,15 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
     brief_pdf = build_pdf_report(run, tmp_path / "executive_brief.pdf", mode="brief")
     assert brief_pdf.exists()
     assert brief_pdf.stat().st_size > 1000
+
+
+def test_markdown_to_docx_sanitizes_xml_control_chars(tmp_path: Path) -> None:
+    output = markdown_to_docx(
+        "# Heading\x00 with control chars\n\n## Subheading\x08\n\n- Bullet\x0b item\n\nParagraph\x1f text",
+        tmp_path / "control_chars.docx",
+    )
+    assert output.exists()
+    assert output.stat().st_size > 1000
 
 
 def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None:

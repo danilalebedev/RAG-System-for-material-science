@@ -571,16 +571,16 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
     }
     document.add_heading(titles.get(mode, "Отчет по поиску литературы"), level=1)
     document.add_paragraph(f"Запрос: {compact_text(run.request.query)}")
-    document.add_paragraph(f"Поисковая формулировка: {display_query(run)}")
+    document.add_paragraph(f"Поисковая формулировка: {compact_text(display_query(run))}")
 
     if mode in {"full", "brief", "deep"}:
         document.add_heading("Общий вывод", level=2)
-        document.add_paragraph(run_overall_summary(run))
+        document.add_paragraph(compact_text(run_overall_summary(run), 4000))
     if mode == "full":
         insights = comparison_insights(run)
         if insights:
             document.add_heading("Сравнение локального и web-поиска", level=2)
-            document.add_paragraph(insights)
+            document.add_paragraph(compact_text(insights, 4000))
     if mode in {"full", "links", "brief"}:
         document.add_heading("Релевантные ссылки", level=2)
         add_docx_table(
@@ -604,7 +604,7 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
         for index, item in enumerate(run.deep_results, start=1):
             summary = item.document_summary or {}
             document.add_heading(f"{index}. {compact_text(item.source_result.title, 180)}", level=3)
-            document.add_paragraph(f"Ссылка: {source_link(item.source_result) or 'n/a'}")
+            document.add_paragraph(f"Ссылка: {compact_text(source_link(item.source_result) or 'n/a')}")
             document.add_paragraph(compact_text(summary.get("summary") or summary.get("main_topic") or "Summary не извлечен.", 2200))
 
     document.save(output_path)
@@ -636,7 +636,7 @@ def markdown_to_docx(text: str, output_path: Path) -> Path:
     document = Document()
     set_docx_style(document)
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = compact_text(raw_line.strip(), 4000)
         if not line:
             continue
         if line.startswith("### "):
