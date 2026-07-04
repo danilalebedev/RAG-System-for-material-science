@@ -11,6 +11,7 @@ from app.graph.search import load_graph, neighbors, paths_to_types, search_entit
 from app.query.csv_corpus import TableHit, format_table_context, search_tables
 from app.query.planner import QueryPlan, plan_query
 from app.query.simple_corpus import EvidenceChunk, format_evidence_context, retrieve_chunks
+from app.rag.query_signals import clean_search_query
 from app.settings import PROJECT_ROOT
 from app.web_search.keywords import extract_keywords
 
@@ -448,16 +449,19 @@ def build_brief(
 
 
 def first_query(plan: QueryPlan, route: str, fallback: str) -> str:
+    rewrite_route = "tables" if route == "table_search" else route
+    queries = getattr(plan.rewritten_queries, rewrite_route, []) or []
+    if queries:
+        return clean_search_query(queries[0])
     if route in {"raw_rag", "summary_rag", "tables", "table_search", "graph"}:
         queries = getattr(plan, "internal_search_queries", []) or []
         if queries:
-            return queries[0]
+            return clean_search_query(queries[0])
     if route == "web":
         queries = getattr(plan, "web_search_queries", []) or []
         if queries:
-            return queries[0]
-    queries = getattr(plan.rewritten_queries, route, []) or []
-    return queries[0] if queries else fallback
+            return clean_search_query(queries[0])
+    return clean_search_query(fallback)
 
 
 def keywords_for_plan(plan: QueryPlan) -> list[str]:

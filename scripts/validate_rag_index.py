@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.index.embeddings import load_retrieval_config  # noqa: E402
+from app.index.embeddings import apply_retrieval_profile, load_retrieval_config  # noqa: E402
 from app.index.vector_store import load_manifest  # noqa: E402
 from app.rag.validation import SearchCase, run_validation, write_validation_outputs  # noqa: E402
 
@@ -17,6 +17,7 @@ from app.rag.validation import SearchCase, run_validation, write_validation_outp
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate generated RAG indexes and search relevance.")
     parser.add_argument("--config", default="config/retrieval/default.json")
+    parser.add_argument("--profile", default=None, help="Retrieval profile from config.profiles, e.g. routerai_bge_m3.")
     parser.add_argument("--index-dir", default=None)
     parser.add_argument("--lexical-dir", default=None)
     parser.add_argument("--chunks", default=None)
@@ -60,7 +61,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     load_dotenv(root / ".env")
     config_path = resolve_project_path(root, args.config, args.config)
-    retrieval_config = load_retrieval_config(config_path)
+    retrieval_config = apply_retrieval_profile(load_retrieval_config(config_path), args.profile)
     index_dir = resolve_project_path(root, args.index_dir, retrieval_config.get("chunk_index_dir", "data/indexes/chunks"))
     lexical_dir = resolve_project_path(root, args.lexical_dir, retrieval_config.get("lexical_index_dir", "data/indexes/lexical"))
     manifest = load_manifest(index_dir)

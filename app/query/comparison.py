@@ -70,9 +70,9 @@ PROCESS_FIELDS = (
     "technology",
 )
 MATERIAL_FIELDS = ("materials", "material_name", "input_materials", "reagents", "outputs")
-CONDITION_FIELDS = ("conditions", "operating_conditions", "experimental_conditions", "equipment_details")
+CONDITION_FIELDS = ("conditions", "operating_conditions", "experimental_conditions", "process_parameters", "equipment_details")
 PROPERTY_FIELDS = ("properties", "observed_effects", "analysis_results")
-NUMERIC_FIELDS = ("numerical_results", "numeric_values", "results", "composition")
+NUMERIC_FIELDS = ("numerical_results", "numeric_values", "analysis_results", "results", "composition")
 ADVANTAGE_FIELDS = ("advantages", "key_findings", "main_conclusions")
 LIMITATION_FIELDS = ("limitations", "limitations_or_gaps", "gaps")
 
@@ -244,6 +244,32 @@ def _rows_from_summaries(context: dict[str, list[dict[str, Any]]], evidence: lis
     return rows
 
 
+def _rows_from_web_summaries(context: dict[str, list[dict[str, Any]]], evidence: list[dict[str, Any]], *, top_k: int) -> list[ComparisonRow]:
+    rows: list[ComparisonRow] = []
+    web_summaries = [
+        row
+        for row in context.get("web") or []
+        if row.get("source") == "deep_search" and row.get("kind") in {"document_summary", "procedure_summary"}
+    ]
+    for index, summary in enumerate(web_summaries[:top_k], start=1):
+        payload = _row_payload(summary)
+        rows.append(
+            ComparisonRow(
+                item=_item_from(payload, index),
+                description=_description_from(payload) or _description_from(summary),
+                materials=_values(payload, MATERIAL_FIELDS),
+                processes=_values(payload, PROCESS_FIELDS),
+                conditions=_values(payload, CONDITION_FIELDS),
+                properties=_values(payload, PROPERTY_FIELDS),
+                numeric_values=_numeric_values(payload),
+                advantages=_values(payload, ADVANTAGE_FIELDS),
+                limitations=_values(payload, LIMITATION_FIELDS),
+                evidence=_evidence_for("web", summary, evidence, index),
+            )
+        )
+    return rows
+
+
 def _rows_from_context_fallback(context: dict[str, list[dict[str, Any]]], evidence: list[dict[str, Any]], *, top_k: int) -> list[ComparisonRow]:
     rows: list[ComparisonRow] = []
     sources = [*(context.get("raw") or []), *(context.get("web") or [])]
@@ -363,6 +389,7 @@ def compare_methods(
         include_web=include_web,
         web_sources=web_sources,
         web_top_k=top_k,
+        web_deep_search=include_web,
         generate_pdf_report=False,
         required_routes=required_routes,
     )
@@ -371,6 +398,7 @@ def compare_methods(
     evidence: list[dict[str, Any]] = payload["evidence"]
 
     rows = _rows_from_summaries(context, evidence, top_k=top_k)
+    rows.extend(_rows_from_web_summaries(context, evidence, top_k=top_k))
     if not rows:
         rows = _rows_from_context_fallback(context, evidence, top_k=top_k)
     rows = _augment_rows_with_tables(rows, context.get("tables") or [])

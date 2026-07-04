@@ -11,25 +11,40 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.index.embeddings import build_embedding_client, load_retrieval_config  # noqa: E402
-from app.index.lexical import LexicalIndex  # noqa: E402
+from app.index.embeddings import apply_retrieval_profile, load_retrieval_config  # noqa: E402
 from app.index.vector_store import load_manifest  # noqa: E402
-from app.rag.retrieval import dense_search, lexical_search, materialize_results, reciprocal_rank_fusion  # noqa: E402
+from app.rag.retrieval import hybrid_search  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Search parsed source chunks through local RAG indexes.")
     parser.add_argument("query")
     parser.add_argument("--config", default="config/retrieval/default.json")
+    parser.add_argument("--profile", default=None, help="Retrieval profile from config.profiles, e.g. routerai_bge_m3.")
     parser.add_argument("--index-dir", default=None)
     parser.add_argument("--lexical-dir", default=None)
     parser.add_argument("--chunks", default=None)
+    parser.add_argument("--publications-dir", default=None)
+    parser.add_argument("--document-summary-index-dir", default=None)
+    parser.add_argument("--procedure-summary-index-dir", default=None)
+    parser.add_argument("--table-root", action="append", default=None)
+    parser.add_argument("--documents", default=None)
+    parser.add_argument("--tables", default=None)
+    parser.add_argument("--graph-nodes", default=None)
+    parser.add_argument("--graph-edges", default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--dense-top-k", type=int, default=None)
     parser.add_argument("--lexical-top-k", type=int, default=None)
+    parser.add_argument("--summary-top-k", type=int, default=None)
+    parser.add_argument("--table-top-k", type=int, default=None)
+    parser.add_argument("--graph-top-k", type=int, default=None)
     parser.add_argument("--mode", choices=["hybrid", "dense", "lexical"], default="hybrid")
     parser.add_argument("--model", choices=["auto", "query", "fallback"], default="auto")
-    parser.add_argument("--embedding-backend", choices=["yandex", "local-hash"], default=None)
+    parser.add_argument("--embedding-backend", choices=["yandex", "local-hash", "routerai"], default=None)
+    parser.add_argument("--offline", action="store_true", default=False, help="Skip network-only dense embeddings and use local streams.")
+    parser.add_argument("--no-summaries", action="store_true", default=False)
+    parser.add_argument("--include-tables", action="store_true", default=False)
+    parser.add_argument("--include-graph", action="store_true", default=False)
     parser.add_argument("--json", action="store_true", default=False)
     return parser.parse_args()
 
@@ -40,29 +55,11 @@ def resolve_project_path(root: Path, value: str | None, fallback: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def query_vector(
-    *,
-    query: str,
-    backend: str,
-    retrieval_config: dict[str, Any],
-    model: str,
-) -> list[float]:
-    client = build_embedding_client(
-        backend=backend,
-        retrieval_config=retrieval_config,
-        kind="query",
-        fallback_model=model == "fallback",
-        api_key=os.getenv("YANDEX_API_KEY"),
-        folder_id=os.getenv("YANDEX_FOLDER_ID"),
-    )
-    return client.embed_text(query)
-
-
 def main() -> int:
     args = parse_args()
     root = Path(__file__).resolve().parents[1]
-    load_dotenv(root / ".env")
-    retrieval_config = load_retrieval_config(root / args.config)
+    load_dotenv(root / ".env", encoding="utf-8-sig")
+    retrieval_config = apply_retrieval_profile(load_retrieval_config(root / args.config), args.profile)
     search_config = retrieval_config.get("search") or {}
     index_dir = resolve_project_path(root, args.index_dir, retrieval_config.get("chunk_index_dir", "data/indexes/chunks"))
     lexical_dir = resolve_project_path(root, args.lexical_dir, retrieval_config.get("lexical_index_dir", "data/indexes/lexical"))
@@ -75,49 +72,74 @@ def main() -> int:
     top_k = args.top_k if args.top_k is not None else int(search_config.get("top_k") or 10)
     dense_top_k = args.dense_top_k if args.dense_top_k is not None else int(search_config.get("dense_top_k") or 50)
     lexical_top_k = args.lexical_top_k if args.lexical_top_k is not None else int(search_config.get("lexical_top_k") or 50)
+    summary_top_k = args.summary_top_k if args.summary_top_k is not None else int(search_config.get("summary_top_k") or 30)
+    table_top_k = args.table_top_k if args.table_top_k is not None else int(search_config.get("table_top_k") or 8)
+    graph_top_k = args.graph_top_k if args.graph_top_k is not None else int(search_config.get("graph_top_k") or 8)
     snippet_chars = int(search_config.get("snippet_chars") or 700)
-    rrf_k = int(search_config.get("rrf_k") or 60)
-    vector_batch_size = int(search_config.get("vector_batch_size") or 8192)
     backend = args.embedding_backend or str(manifest.get("embedding_backend") or (retrieval_config.get("embedding") or {}).get("backend") or "yandex")
-    query_model = args.model
-    if query_model == "auto":
-        query_model = "fallback" if manifest.get("model_selection") == "fallback" else "query"
+    publications_dir = resolve_project_path(root, args.publications_dir, retrieval_config.get("summary_publications_dir", "data/processed/publications"))
+    document_summary_index_dir = resolve_project_path(root, args.document_summary_index_dir, retrieval_config.get("document_summary_index_dir", "data/indexes/document_summaries"))
+    procedure_summary_index_dir = resolve_project_path(root, args.procedure_summary_index_dir, retrieval_config.get("procedure_summary_index_dir", "data/indexes/procedure_summaries"))
+    table_roots = [resolve_project_path(root, value, value) for value in (args.table_root or ["data/parsed/spreadsheets_csv"])]
+    documents_path = resolve_project_path(root, args.documents, "data/parsed/documents.jsonl")
+    tables_path = resolve_project_path(root, args.tables, "data/parsed/tables.jsonl")
+    graph_nodes_path = resolve_project_path(root, args.graph_nodes, "data/index/knowledge_graph_nodes.jsonl")
+    graph_edges_path = resolve_project_path(root, args.graph_edges, "data/index/knowledge_graph_edges.jsonl")
 
-    dense_hits = []
-    lexical_hits = []
-    if args.mode in {"hybrid", "dense"}:
-        if not manifest:
-            raise RuntimeError(f"vector manifest not found in {index_dir}; run scripts/build_indexes.py first")
-        dense_hits = dense_search(
-            index_dir,
-            query_vector(query=args.query, backend=backend, retrieval_config=retrieval_config, model=query_model),
-            top_k=dense_top_k if args.mode == "hybrid" else top_k,
-            batch_size=vector_batch_size,
+    try:
+        results, diagnostics = hybrid_search(
+            query=args.query,
+            retrieval_config=retrieval_config,
+            index_dir=index_dir,
+            lexical_dir=lexical_dir,
+            chunks_path=chunks_path,
+            top_k=top_k,
+            mode=args.mode,
+            dense_top_k=dense_top_k,
+            lexical_top_k=lexical_top_k,
+            summary_top_k=summary_top_k,
+            table_top_k=table_top_k,
+            graph_top_k=graph_top_k,
+            snippet_chars=snippet_chars,
+            allow_network=not args.offline,
+            embedding_backend=backend,
+            model=args.model,
+            api_key=os.getenv("YANDEX_API_KEY"),
+            folder_id=os.getenv("YANDEX_FOLDER_ID"),
+            root=root,
+            publications_dir=publications_dir,
+            document_summary_index_dir=document_summary_index_dir,
+            procedure_summary_index_dir=procedure_summary_index_dir,
+            table_roots=table_roots,
+            documents_path=documents_path,
+            tables_path=tables_path,
+            graph_nodes_path=graph_nodes_path,
+            graph_edges_path=graph_edges_path,
+            include_summaries=not args.no_summaries,
+            include_tables=args.include_tables,
+            include_graph=args.include_graph,
         )
-    if args.mode in {"hybrid", "lexical"}:
-        lexical_index = LexicalIndex(lexical_dir)
-        if lexical_index.exists():
-            lexical_hits = lexical_search(lexical_dir, args.query, top_k=lexical_top_k if args.mode == "hybrid" else top_k)
-        elif args.mode == "lexical":
-            raise RuntimeError(f"lexical index not found in {lexical_dir}; run scripts/build_indexes.py first")
-
-    if args.mode == "dense":
-        ranked_rows = [(hit.row_id, hit.score, {"dense": hit.score}) for hit in dense_hits[:top_k]]
-    elif args.mode == "lexical":
-        ranked_rows = [(hit.row_id, hit.score, {"lexical": hit.score}) for hit in lexical_hits[:top_k]]
-    else:
-        ranked_rows = reciprocal_rank_fusion(dense_hits=dense_hits, lexical_hits=lexical_hits, rrf_k=rrf_k, top_k=top_k)
-    results = materialize_results(ranked_rows=ranked_rows, index_dir=index_dir, chunks_path=chunks_path, snippet_chars=snippet_chars)
+    except RuntimeError as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc), "mode": args.mode, "offline": args.offline}, ensure_ascii=False, indent=2))
+        else:
+            print(f"search failed: {exc}", file=sys.stderr)
+        return 2
 
     if args.json:
-        print(json.dumps([result.as_dict() for result in results], ensure_ascii=False, indent=2))
+        print(json.dumps({"diagnostics": diagnostics.as_dict(), "results": [result.as_dict() for result in results]}, ensure_ascii=False, indent=2))
         return 0
+    if diagnostics.warnings:
+        print("warnings=" + " | ".join(diagnostics.warnings))
+    print(f"query={diagnostics.query.search_query} dense_status={diagnostics.dense_status} streams={diagnostics.streams}")
     for result in results:
-        print(f"{result.rank}. score={result.score:.6f} doc_id={result.doc_id} chunk_id={result.chunk_id}")
+        print(f"{result.rank}. score={result.score:.6f} source_type={result.source_type} doc_id={result.doc_id} candidate_id={result.candidate_id}")
         print(f"   source_path={result.source_path}")
         if result.components:
             components = ", ".join(f"{key}={value:.6f}" for key, value in sorted(result.components.items()))
             print(f"   components={components}")
+        if result.reasons:
+            print(f"   why={'; '.join(result.reasons)}")
         print(f"   {result.text}")
     return 0
 

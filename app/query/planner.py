@@ -465,7 +465,7 @@ def route_query_variants(query: str, entities: QueryEntities, routes: list[Route
     if "raw_rag" in routes or "internal_rag" in routes:
         rewritten.raw_rag = variants(numbers)
     if "summary_rag" in routes or "internal_rag" in routes:
-        rewritten.summary_rag = variants("procedure summary " + entity_query if entity_query else "")
+        rewritten.summary_rag = variants(entity_query)
     if "graph_search" in routes:
         rewritten.graph = variants(entity_query)
     if "table_search" in routes:

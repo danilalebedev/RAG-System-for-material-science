@@ -1,6 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from app.query.orchestrator import run_query_orchestration
+from app.llm.types import LLMResponse
+from app.query.local_orchestrator import first_query
+from app.query.orchestrator import QueryOrchestrationResult, RetrievedContext, answer_with_provider_router, run_query_orchestration
 from app.query.planner import plan_query
 
 
@@ -31,7 +33,7 @@ def test_graph_query_routes_to_graph_and_summary() -> None:
 
 
 def test_demo_graph_prompt_keeps_graph_route_with_publications_tail() -> None:
-    plan = plan_query("Показать связи: никель -> процессы -> свойства -> публикации")
+    plan = plan_query("РџРѕРєР°Р·Р°С‚СЊ СЃРІСЏР·Рё: РЅРёРєРµР»СЊ -> РїСЂРѕС†РµСЃСЃС‹ -> СЃРІРѕР№СЃС‚РІР° -> РїСѓР±Р»РёРєР°С†РёРё")
     assert plan.intent == "graph_exploration"
     assert "graph_search" in plan.routes
     assert plan.answer_format == "graph_explanation"
@@ -46,7 +48,7 @@ def test_literature_query_routes_to_web_and_internal_rag() -> None:
 
 
 def test_query_plan_json_has_required_stable_keys() -> None:
-    payload = plan_query("где написано про извлечение никеля из хвостов").model_dump(mode="json")
+    payload = plan_query("РіРґРµ РЅР°РїРёСЃР°РЅРѕ РїСЂРѕ РёР·РІР»РµС‡РµРЅРёРµ РЅРёРєРµР»СЏ РёР· С…РІРѕСЃС‚РѕРІ").model_dump(mode="json")
     assert set(payload) == {
         "original_query",
         "intent",
@@ -70,6 +72,20 @@ def test_query_plan_json_has_required_stable_keys() -> None:
     assert payload["clarifying_question"] is None
 
 
+def test_query_plan_search_strings_do_not_include_slot_noise() -> None:
+    plan = plan_query("compare nickel leaching and flotation")
+    joined = " ".join(plan.rewritten_queries.summary_rag)
+    assert "procedure summary" not in joined.casefold()
+    noisy = plan.model_copy(
+        update={
+            "rewritten_queries": plan.rewritten_queries.model_copy(
+                update={"summary_rag": ["procedure summary nickel ore raw_rag"]}
+            )
+        }
+    )
+    assert first_query(noisy, "summary_rag", noisy.original_query) == "nickel ore"
+
+
 def test_orchestrator_returns_structured_result_with_fallbacks(tmp_path) -> None:
     result = run_query_orchestration("compare nickel leaching at 80 C", project_root=tmp_path, include_web=False)
     payload = result.as_dict()
@@ -82,9 +98,50 @@ def test_orchestrator_returns_structured_result_with_fallbacks(tmp_path) -> None
 
 
 def test_nickel_ore_query_uses_phrase_aliases_and_forced_routes() -> None:
-    plan = plan_query("никелевая руда")
-    assert "никелевая руда" in plan.entities.materials
+    query = "\u043d\u0438\u043a\u0435\u043b\u0435\u0432\u0430\u044f \u0440\u0443\u0434\u0430"
+    plan = plan_query(query)
+    assert query in plan.entities.materials
     assert {"raw_rag", "summary_rag", "table_search", "graph_search"}.issubset(set(plan.routes))
-    assert "Материал:" not in " ".join(plan.internal_search_queries)
+    assert "\u041c\u0430\u0442\u0435\u0440\u0438\u0430\u043b:" not in " ".join(plan.internal_search_queries)
     assert "nickel ore" in " ".join(plan.web_search_queries)
-    assert "никелевая руда" in plan.entity_aliases
+    assert query in plan.entity_aliases
+
+def test_answer_with_provider_router_passes_retrieved_context(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeRouter:
+        def ask(self, question: str, **kwargs: object) -> LLMResponse:
+            captured["question"] = question
+            captured.update(kwargs)
+            return LLMResponse(
+                text="router answer",
+                provider="routerai",
+                model="deepseek/deepseek-chat-v3.1",
+                status="fallback",
+                used_evidence=bool(kwargs.get("context")),
+            )
+
+    monkeypatch.setattr("app.query.orchestrator.ProviderRouter.from_env", lambda root=None: FakeRouter())
+    result = QueryOrchestrationResult(
+        plan=plan_query("nickel ore"),
+        retrieved_context=RetrievedContext(
+            raw=[
+                {
+                    "id": "raw:1",
+                    "score": 1.0,
+                    "doc_id": "doc1",
+                    "preview": "Nickel ore flotation evidence.",
+                    "score_components": {"lexical": 1.0},
+                    "why": ["nickel ore"],
+                }
+            ]
+        ),
+        evidence=[],
+        answer_draft="draft",
+    )
+
+    response = answer_with_provider_router("nickel ore", result, project_root=tmp_path)
+
+    assert response.provider == "routerai"
+    assert captured["question"] == "nickel ore"
+    assert "Nickel ore flotation evidence" in str(captured["context"])

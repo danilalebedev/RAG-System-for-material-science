@@ -11,13 +11,11 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.index.embeddings import build_embedding_client, load_retrieval_config
-from app.index.lexical import LexicalIndex
-from app.index.vector_store import load_manifest
-from app.llm.yandex_client import YandexLLMClient
+from app.index.embeddings import apply_retrieval_profile, load_retrieval_config
+from app.llm.provider_router import ProviderRouter
 from app.query.csv_corpus import format_table_context, search_tables
 from app.query.simple_corpus import format_evidence_context, retrieve_chunks
-from app.rag.retrieval import dense_search, lexical_search, materialize_results, reciprocal_rank_fusion
+from app.rag.retrieval import RetrievalDiagnostics, hybrid_search
 from app.settings import paths
 
 
@@ -29,13 +27,15 @@ SYSTEM_PROMPT = """Ты помощник RAG-системы по научно-т
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ask YandexGPT over local RAG evidence and optional table context.")
+    parser = argparse.ArgumentParser(description="Ask Yandex-first LLM router over local RAG evidence and optional table context.")
     parser.add_argument("question_parts", nargs="*", help="Question text. Alternative: --question.")
     parser.add_argument("--question", help="Question text.")
     parser.add_argument("--no-corpus", action="store_true", help="Skip local corpus retrieval and call LLM directly.")
     parser.add_argument("--retrieval", choices=["auto", "indexed", "scan"], default="auto")
     parser.add_argument("--search-mode", choices=["hybrid", "dense", "lexical"], default="hybrid")
+    parser.add_argument("--offline", action="store_true", help="Skip Yandex query embeddings and use local retrieval streams.")
     parser.add_argument("--config", default="config/retrieval/default.json")
+    parser.add_argument("--profile", default=None, help="Retrieval profile from config.profiles, e.g. routerai_bge_m3.")
     parser.add_argument("--index-dir", default=None)
     parser.add_argument("--lexical-dir", default=None)
     parser.add_argument("--chunks-path", type=Path)
@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lexical-top-k", type=int, default=50)
     parser.add_argument("--max-scan-rows", type=int, default=20_000, help="0 scans all chunks.")
     parser.add_argument("--include-tables", action="store_true")
+    parser.add_argument("--include-graph", action="store_true")
     parser.add_argument("--table-root", action="append", default=["data/parsed/spreadsheets_csv"])
     parser.add_argument("--table-top-k", type=int, default=4)
     parser.add_argument("--table-top-rows", type=int, default=3)
@@ -52,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-table-context-chars", type=int, default=8_000)
     parser.add_argument("--max-tokens", type=int, default=900)
     parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--model", help="Override YANDEX_MODEL for this call.")
+    parser.add_argument("--model", help="Override YANDEX_MODEL for the primary Yandex call.")
     parser.add_argument("--json", action="store_true", help="Print answer/evidence payload as JSON.")
     return parser.parse_args()
 
@@ -74,7 +75,7 @@ def indexed_results(
     question: str,
     *,
     root: Path,
-    config_path: Path,
+    retrieval_config: dict[str, Any],
     index_dir: Path,
     lexical_dir: Path,
     chunks_path: Path,
@@ -82,57 +83,40 @@ def indexed_results(
     top_k: int,
     dense_top_k: int,
     lexical_top_k: int,
-) -> list[Any]:
-    retrieval_config = load_retrieval_config(config_path)
+    offline: bool,
+    include_graph: bool,
+) -> tuple[list[Any], RetrievalDiagnostics | None]:
     search_config = retrieval_config.get("search") or {}
     snippet_chars = int(search_config.get("snippet_chars") or 700)
-    rrf_k = int(search_config.get("rrf_k") or 60)
-    vector_batch_size = int(search_config.get("vector_batch_size") or 8192)
-    manifest = load_manifest(index_dir)
-
-    dense_hits = []
-    lexical_hits = []
-    if search_mode in {"hybrid", "dense"} and manifest:
-        backend = str(manifest.get("embedding_backend") or (retrieval_config.get("embedding") or {}).get("backend") or "yandex")
-        model = "fallback" if manifest.get("model_selection") == "fallback" else "query"
-        client = build_embedding_client(
-            backend=backend,
-            retrieval_config=retrieval_config,
-            kind="query",
-            fallback_model=model == "fallback",
-            api_key=os.getenv("YANDEX_API_KEY"),
-            folder_id=os.getenv("YANDEX_FOLDER_ID"),
-        )
-        dense_hits = dense_search(
-            index_dir,
-            client.embed_text(question),
-            top_k=dense_top_k if search_mode == "hybrid" else top_k,
-            batch_size=vector_batch_size,
-        )
-    if search_mode in {"hybrid", "lexical"}:
-        lexical_index = LexicalIndex(lexical_dir)
-        if lexical_index.exists():
-            lexical_hits = lexical_search(
-                lexical_dir,
-                question,
-                top_k=lexical_top_k if search_mode == "hybrid" else top_k,
-            )
-
-    if search_mode == "dense":
-        ranked_rows = [(hit.row_id, hit.score, {"dense": hit.score}) for hit in dense_hits[:top_k]]
-    elif search_mode == "lexical":
-        ranked_rows = [(hit.row_id, hit.score, {"lexical": hit.score}) for hit in lexical_hits[:top_k]]
-    else:
-        ranked_rows = reciprocal_rank_fusion(dense_hits=dense_hits, lexical_hits=lexical_hits, rrf_k=rrf_k, top_k=top_k)
-
-    if not ranked_rows:
-        return []
-    return materialize_results(
-        ranked_rows=ranked_rows,
+    results, diagnostics = hybrid_search(
+        query=question,
+        retrieval_config=retrieval_config,
         index_dir=index_dir,
+        lexical_dir=lexical_dir,
         chunks_path=chunks_path,
+        mode=search_mode,  # type: ignore[arg-type]
+        top_k=top_k,
+        dense_top_k=dense_top_k,
+        lexical_top_k=lexical_top_k,
         snippet_chars=snippet_chars,
+        allow_network=not offline,
+        model="auto",
+        api_key=os.getenv("YANDEX_API_KEY"),
+        folder_id=os.getenv("YANDEX_FOLDER_ID"),
+        root=root,
+        publications_dir=resolve_project_path(root, None, retrieval_config.get("summary_publications_dir", "data/processed/publications")),
+        document_summary_index_dir=resolve_project_path(root, None, retrieval_config.get("document_summary_index_dir", "data/indexes/document_summaries")),
+        procedure_summary_index_dir=resolve_project_path(root, None, retrieval_config.get("procedure_summary_index_dir", "data/indexes/procedure_summaries")),
+        table_roots=(root / "data" / "parsed" / "spreadsheets_csv",),
+        documents_path=root / "data" / "parsed" / "documents.jsonl",
+        tables_path=root / "data" / "parsed" / "tables.jsonl",
+        graph_nodes_path=root / "data" / "index" / "knowledge_graph_nodes.jsonl",
+        graph_edges_path=root / "data" / "index" / "knowledge_graph_edges.jsonl",
+        include_summaries=True,
+        include_tables=False,
+        include_graph=include_graph,
     )
+    return results, diagnostics
 
 
 def format_indexed_context(results: list[Any], *, max_chars: int) -> str:
@@ -140,7 +124,9 @@ def format_indexed_context(results: list[Any], *, max_chars: int) -> str:
     used = 0
     for result in results:
         block = (
-            f"[{result.rank}] doc_id={result.doc_id}; chunk_id={result.chunk_id}; source_path={result.source_path}\n"
+            f"[{result.rank}] source_type={getattr(result, 'source_type', 'raw_chunk')}; "
+            f"doc_id={result.doc_id}; candidate_id={getattr(result, 'candidate_id', result.chunk_id)}; "
+            f"source_path={result.source_path}\n"
             f"{result.text}"
         )
         if used + len(block) + 2 > max_chars:
@@ -167,37 +153,48 @@ def table_context(question: str, *, root: Path, args: argparse.Namespace) -> tup
 def main() -> int:
     args = parse_args()
     root = Path(__file__).resolve().parents[1]
-    load_dotenv(root / ".env")
+    load_dotenv(root / ".env", encoding="utf-8-sig")
     question = resolve_question(args)
     project_paths = paths()
     chunks_path = args.chunks_path or project_paths.parsed_dir / "chunks.jsonl"
 
     text_context = None
     text_evidence: list[dict[str, Any]] = []
+    retrieval_diagnostics: dict[str, Any] = {}
     retrieval_used = "none"
     if not args.no_corpus:
         config_path = resolve_project_path(root, args.config, args.config)
-        retrieval_config = load_retrieval_config(config_path)
+        retrieval_config = apply_retrieval_profile(load_retrieval_config(config_path), args.profile)
         index_dir = resolve_project_path(root, args.index_dir, retrieval_config.get("chunk_index_dir", "data/indexes/chunks"))
         lexical_dir = resolve_project_path(root, args.lexical_dir, retrieval_config.get("lexical_index_dir", "data/indexes/lexical"))
 
         results = []
         if args.retrieval in {"auto", "indexed"}:
-            results = indexed_results(
-                question,
-                root=root,
-                config_path=config_path,
-                index_dir=index_dir,
-                lexical_dir=lexical_dir,
-                chunks_path=chunks_path,
-                search_mode=args.search_mode,
-                top_k=args.top_k,
-                dense_top_k=args.dense_top_k,
-                lexical_top_k=args.lexical_top_k,
-            )
-            retrieval_used = "indexed" if results else "indexed-empty"
-            if args.retrieval == "indexed" and not results:
-                raise SystemExit("No indexed retrieval results. Build indexes or use --retrieval scan.")
+            try:
+                results, diagnostics = indexed_results(
+                    question,
+                    root=root,
+                    retrieval_config=retrieval_config,
+                    index_dir=index_dir,
+                    lexical_dir=lexical_dir,
+                    chunks_path=chunks_path,
+                    search_mode=args.search_mode,
+                    top_k=args.top_k,
+                    dense_top_k=args.dense_top_k,
+                    lexical_top_k=args.lexical_top_k,
+                    offline=args.offline,
+                    include_graph=args.include_graph,
+                )
+                retrieval_diagnostics = diagnostics.as_dict() if diagnostics else {}
+                retrieval_used = "indexed" if results else "indexed-empty"
+                if args.retrieval == "indexed" and not results:
+                    raise SystemExit("No indexed retrieval results. Build indexes or use --retrieval scan.")
+            except Exception as exc:  # noqa: BLE001 - auto mode must fall back to local scan.
+                retrieval_diagnostics = {"indexed_error": str(exc)[:500], "offline": args.offline}
+                if args.retrieval == "indexed":
+                    raise
+                retrieval_used = "indexed-error"
+                results = []
 
         if not results and args.retrieval in {"auto", "scan"}:
             scan_hits = retrieve_chunks(question, chunks_path, top_k=args.top_k, max_rows=args.max_scan_rows)
@@ -224,8 +221,8 @@ def main() -> int:
 
     context_parts = [part for part in (text_context, tables_context) if part]
     combined_context = "\n\n".join(context_parts) if context_parts else None
-    client = YandexLLMClient()
-    answer = client.ask(
+    router = ProviderRouter.from_env(root=root)
+    llm_response = router.ask(
         question,
         system_prompt=SYSTEM_PROMPT if combined_context else None,
         context=combined_context,
@@ -233,13 +230,16 @@ def main() -> int:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
     )
+    answer = llm_response.text
 
     if args.json:
         print(
             json.dumps(
                 {
                     "answer": answer,
+                    "llm": llm_response.metadata(),
                     "retrieval_used": retrieval_used,
+                    "retrieval_diagnostics": retrieval_diagnostics,
                     "text_evidence": text_evidence,
                     "table_evidence": table_evidence,
                 },
@@ -251,6 +251,25 @@ def main() -> int:
         return 0
 
     print(answer)
+    print(
+        "\nLLM provider:"
+        f" provider={llm_response.provider}"
+        f" model={llm_response.model}"
+        f" status={llm_response.status}"
+        f" fallback_reason={llm_response.fallback_reason or 'none'}"
+        f" used_evidence={str(llm_response.used_evidence).lower()}"
+    )
+    if retrieval_diagnostics:
+        print(
+            "Retrieval:"
+            f" used={retrieval_used}"
+            f" dense_status={retrieval_diagnostics.get('dense_status', 'n/a')}"
+            f" streams={retrieval_diagnostics.get('streams', {})}"
+        )
+    if llm_response.warnings:
+        print("LLM warnings:")
+        for warning in llm_response.warnings:
+            print(f"- {warning}")
     if text_evidence:
         print("\nEvidence:")
         for item in text_evidence:

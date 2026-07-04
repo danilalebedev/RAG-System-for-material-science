@@ -10,6 +10,7 @@ import requests
 
 from app.extract.publication_metadata import ExtractionConfig, YandexCompletionClient, build_prompt, extract_json_object
 from app.io_utils import write_jsonl
+from app.llm.provider_router import ProviderRouter
 from app.web_search.clients import compact_text
 from app.web_search.fetch import FetchedExcerpt, safe_fetch_excerpt
 from app.web_search.schemas import DeepSearchResult, LiteratureSearchResult
@@ -20,6 +21,24 @@ class CompletionClient(Protocol):
 
     def complete(self, prompt: str) -> tuple[str, dict[str, Any]]:
         ...
+
+
+class RouterCompletionClient:
+    def __init__(self, router: ProviderRouter) -> None:
+        self.router = router
+        self.model_uri = "provider-router"
+
+    def complete(self, prompt: str) -> tuple[str, dict[str, Any]]:
+        response = self.router.generate(
+            [{"role": "user", "content": prompt}],
+            question="extract structured publication summary",
+            max_tokens=1800,
+            temperature=0.1,
+            used_evidence=True,
+        )
+        if response.provider == "local":
+            raise RuntimeError("remote LLM providers are unavailable; structured deep-search extraction cannot use local fallback")
+        return response.text, response.metadata()
 
 
 def stable_web_id(prefix: str, *parts: Any) -> str:
@@ -152,6 +171,10 @@ def build_yandex_client_from_env(config_path: Path | None = None) -> CompletionC
         return None
     config = ExtractionConfig.from_file(config_path or Path("config/extraction/publication_metadata.json"))
     return YandexCompletionClient(api_key=api_key, folder_id=folder_id, config=config)
+
+
+def build_router_completion_client_from_env(project_root: Path) -> CompletionClient:
+    return RouterCompletionClient(ProviderRouter.from_env(root=project_root))
 
 
 def run_deep_search(

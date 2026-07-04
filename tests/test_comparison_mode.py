@@ -109,4 +109,40 @@ def test_compare_methods_adds_web_route_when_enabled(monkeypatch) -> None:
 
     assert captured["include_web"] is True
     assert captured["web_top_k"] == 3
+    assert captured["web_deep_search"] is True
     assert captured["required_routes"] == ["summary_rag", "raw_rag", "table_search", "graph_search", "web_search"]
+
+
+def test_compare_methods_builds_rows_from_web_deep_summaries(monkeypatch) -> None:
+    class WebSummaryOrchestration(FakeOrchestration):
+        def as_dict(self) -> dict[str, Any]:
+            payload = super().as_dict()
+            payload["retrieved_context"]["summaries"] = []
+            payload["retrieved_context"]["web"] = [
+                {
+                    "id": "webdocsum:1",
+                    "source": "deep_search",
+                    "kind": "document_summary",
+                    "title": "Web nickel flotation",
+                    "preview": "Nickel ore flotation improves recovery.",
+                    "row": {
+                        "methods": ["flotation"],
+                        "materials": ["nickel ore"],
+                        "process_parameters": ["pH 9"],
+                        "analysis_results": ["91% Ni recovery"],
+                        "key_findings": ["xanthate dosage matters"],
+                    },
+                }
+            ]
+            payload["evidence"] = [{"citation": "webdocsum:1", "route": "web", "title": "Web nickel flotation"}]
+            return payload
+
+    monkeypatch.setattr("app.query.comparison.run_query_orchestration", lambda *args, **kwargs: WebSummaryOrchestration())
+
+    result = compare_methods("compare nickel ore flotation", include_web=True, top_k=3)
+
+    assert result.rows
+    row = result.rows[0]
+    assert row.item == "flotation"
+    assert "nickel ore" in row.materials
+    assert "91% Ni recovery" in row.numeric_values

@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.index.embeddings import load_retrieval_config
+from app.llm.provider_router import ProviderRouter
+from app.llm.types import LLMResponse
 from app.query.csv_corpus import TableHit
 from app.query.literature import run_literature_search
 from app.query.local_orchestrator import (
@@ -18,8 +21,14 @@ from app.query.local_orchestrator import (
 )
 from app.query.planner import QueryPlan, RouteName, plan_query
 from app.query.simple_corpus import EvidenceChunk, retrieve_chunks
+from app.rag.retrieval import RetrievalResult, hybrid_search
 from app.settings import PROJECT_ROOT
 from app.web_search.schemas import DEFAULT_SEARCH_SOURCES, LiteratureSearchRequest, LiteratureSearchRun, SearchSource
+
+
+ORCHESTRATION_SYSTEM_PROMPT = """Ты RAG-ассистент для научно-технического корпуса.
+Отвечай только по retrieved evidence. Если данных недостаточно, скажи об этом явно.
+Для сравнений методик используй таблицы и summary/procedure evidence, не выдумывай числа."""
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,29 @@ def raw_rows(chunks: list[EvidenceChunk]) -> list[dict[str, Any]]:
     ]
 
 
+def indexed_raw_rows(results: list[RetrievalResult]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for result in results:
+        payload = result.as_dict()
+        rows.append(
+            {
+                "id": payload["candidate_id"],
+                "rank": payload["rank"],
+                "score": payload["score"],
+                "source_type": payload["source_type"],
+                "doc_id": payload["doc_id"],
+                "chunk_id": payload["chunk_id"],
+                "summary_id": payload["summary_id"],
+                "source_path": payload["source_path"],
+                "local_path": payload["local_path"],
+                "preview": payload["text"],
+                "score_components": payload["score_components"],
+                "why": payload["why"],
+            }
+        )
+    return rows
+
+
 def summary_rows(hits: list[SummaryHit]) -> list[dict[str, Any]]:
     return [hit.as_dict() for hit in hits]
 
@@ -191,11 +223,61 @@ def web_rows(run: LiteratureSearchRun | None) -> list[dict[str, Any]]:
                 "preview": result.abstract or result.snippet or "",
             }
         )
+    for deep_result in run.deep_results:
+        source = deep_result.source_result
+        summary = deep_result.document_summary or {}
+        if summary:
+            rows.append(
+                {
+                    "id": f"webdocsum:{deep_result.result_id}",
+                    "source": "deep_search",
+                    "kind": "document_summary",
+                    "source_type": "web_document_summary",
+                    "title": source.title,
+                    "result_id": deep_result.result_id,
+                    "doc_id": summary.get("doc_id"),
+                    "summary_id": summary.get("document_summary_id") or summary.get("summary_id"),
+                    "url": str(source.url) if source.url else "",
+                    "doi": source.doi,
+                    "score": source.score,
+                    "keyword_hits": source.keyword_hits,
+                    "preview": summary.get("summary") or summary.get("main_topic") or source.abstract or "",
+                    "summary": summary.get("summary") or "",
+                    "row": summary,
+                }
+            )
+        for index, procedure in enumerate(deep_result.procedure_summaries, start=1):
+            preview = (
+                procedure.get("summary")
+                or procedure.get("key_points")
+                or procedure.get("synthesis_or_process_method")
+                or procedure.get("synthesis_method")
+                or str(procedure)
+            )
+            rows.append(
+                {
+                    "id": f"webproc:{deep_result.result_id}:{index}",
+                    "source": "deep_search",
+                    "kind": "procedure_summary",
+                    "source_type": "web_procedure_summary",
+                    "title": source.title,
+                    "result_id": deep_result.result_id,
+                    "doc_id": procedure.get("doc_id"),
+                    "summary_id": procedure.get("procedure_summary_id") or procedure.get("summary_id"),
+                    "url": str(source.url) if source.url else "",
+                    "doi": source.doi,
+                    "score": source.score,
+                    "keyword_hits": source.keyword_hits,
+                    "preview": str(preview)[:1200],
+                    "row": procedure,
+                }
+            )
     return rows
 
 
 def add_evidence(evidence: list[dict[str, Any]], route: str, rows: list[dict[str, Any]], *, limit: int = 5) -> None:
-    for row in rows[:limit]:
+    selected = [row for row in rows if row.get("source_type") != "diagnostics"][:limit]
+    for row in selected:
         citation = row.get("id") or f"{route}:{len(evidence) + 1}"
         evidence.append(
             {
@@ -244,6 +326,51 @@ def run_raw_route(plan: QueryPlan, config: LocalKnowledgeConfig, fallbacks: list
         fallbacks.append(route_unavailable("raw_rag", f"raw chunks file is missing: {config.chunks_path}"))
         return []
     query = first_query(plan, "raw_rag", plan.original_query)
+    config_path = config.project_root / "config" / "retrieval" / "default.json"
+    index_dir = config.project_root / "data" / "indexes" / "chunks"
+    lexical_dir = config.project_root / "data" / "indexes" / "lexical"
+    if config_path.exists() and lexical_dir.exists():
+        try:
+            retrieval_config = load_retrieval_config(config_path)
+            results, diagnostics = hybrid_search(
+                query=query,
+                retrieval_config=retrieval_config,
+                index_dir=index_dir,
+                lexical_dir=lexical_dir,
+                chunks_path=config.chunks_path,
+                top_k=config.top_k_raw,
+                mode="hybrid",
+                allow_network=False,
+                root=config.project_root,
+                publications_dir=config.publications_dir,
+                document_summary_index_dir=config.project_root / "data" / "indexes" / "document_summaries",
+                procedure_summary_index_dir=config.project_root / "data" / "indexes" / "procedure_summaries",
+                include_summaries=False,
+                include_tables=False,
+                include_graph=False,
+            )
+            if results:
+                rows = indexed_raw_rows(results)
+                rows.append(
+                    {
+                        "id": "raw_rag:diagnostics",
+                        "rank": None,
+                        "score": None,
+                        "source_type": "diagnostics",
+                        "doc_id": "",
+                        "chunk_id": "",
+                        "summary_id": "",
+                        "source_path": "",
+                        "local_path": "",
+                        "preview": "",
+                        "score_components": {},
+                        "why": diagnostics.warnings,
+                        "diagnostics": diagnostics.as_dict(),
+                    }
+                )
+                return rows
+        except Exception as exc:  # noqa: BLE001 - scan fallback keeps GUI usable.
+            fallbacks.append(route_unavailable("raw_rag_indexed", f"indexed raw RAG unavailable, using scan fallback: {str(exc)[:300]}"))
     return raw_rows(retrieve_chunks(query, config.chunks_path, top_k=config.top_k_raw, max_rows=config.max_scan_rows))
 
 
@@ -279,6 +406,7 @@ def run_web_route(
     include_web: bool,
     web_sources: list[SearchSource] | None,
     web_top_k: int,
+    web_deep_search: bool,
     generate_pdf_report: bool,
     fallbacks: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], LiteratureSearchRun | None]:
@@ -290,6 +418,8 @@ def run_web_route(
         query=web_query,
         top_k=web_top_k,
         sources=web_sources or DEFAULT_SEARCH_SOURCES.copy(),
+        deep_search="top5" if web_deep_search else "none",
+        deep_search_limit=min(max(web_top_k, 1), 5),
         include_local_search=False,
         use_query_rewrite=True,
         use_llm_query_rewrite=False,
@@ -307,6 +437,7 @@ def run_query_orchestration(
     include_web: bool = False,
     web_sources: list[SearchSource] | None = None,
     web_top_k: int = 10,
+    web_deep_search: bool = False,
     generate_pdf_report: bool = False,
     required_routes: list[RouteName] | None = None,
 ) -> QueryOrchestrationResult:
@@ -338,6 +469,7 @@ def run_query_orchestration(
             include_web=include_web,
             web_sources=web_sources,
             web_top_k=web_top_k,
+            web_deep_search=web_deep_search,
             generate_pdf_report=generate_pdf_report,
             fallbacks=fallbacks,
         )
@@ -356,4 +488,58 @@ def run_query_orchestration(
         fallbacks=fallbacks,
         local_diagnostics=local_diagnostics(config, plan),
         web_run=web_run,
+    )
+
+
+def format_orchestration_context(result: QueryOrchestrationResult, *, max_chars: int = 18_000) -> str:
+    payload = result.as_dict()
+    context = payload["retrieved_context"]
+    sections: list[tuple[str, list[dict[str, Any]]]] = [
+        ("RAW", context.get("raw") or []),
+        ("SUMMARIES", context.get("summaries") or []),
+        ("TABLES", context.get("tables") or []),
+        ("GRAPH", context.get("graph") or []),
+        ("WEB", context.get("web") or []),
+    ]
+    parts: list[str] = []
+    used = 0
+    for section, rows in sections:
+        if not rows:
+            continue
+        lines = [f"## {section}"]
+        for index, row in enumerate(rows[:8], start=1):
+            if row.get("source_type") == "diagnostics":
+                continue
+            label = row.get("id") or row.get("citation") or f"{section.lower()}:{index}"
+            title = row.get("title") or row.get("label") or row.get("doc_id") or ""
+            preview = row.get("preview") or row.get("summary") or row.get("path") or row.get("relation") or ""
+            components = row.get("score_components") or {}
+            why = row.get("why") or row.get("matched_terms") or []
+            lines.append(
+                f"[{label}] title={title}; score={row.get('score')}; components={components}; why={why}\n{str(preview)[:1400]}"
+            )
+        block = "\n".join(lines)
+        if used + len(block) + 2 > max_chars:
+            break
+        parts.append(block)
+        used += len(block) + 2
+    return "\n\n".join(parts)
+
+
+def answer_with_provider_router(
+    query: str,
+    result: QueryOrchestrationResult,
+    *,
+    project_root: Path = PROJECT_ROOT,
+    max_tokens: int = 900,
+    temperature: float = 0.2,
+) -> LLMResponse:
+    router = ProviderRouter.from_env(root=project_root)
+    context = format_orchestration_context(result)
+    return router.ask(
+        query,
+        system_prompt=ORCHESTRATION_SYSTEM_PROMPT,
+        context=context,
+        max_tokens=max_tokens,
+        temperature=temperature,
     )

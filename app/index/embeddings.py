@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
 import re
 import time
@@ -73,6 +74,34 @@ class EmbeddingConfig:
 def load_retrieval_config(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def apply_retrieval_profile(config: dict[str, Any], profile: str | None) -> dict[str, Any]:
+    if not profile:
+        return config
+    profiles = config.get("profiles") or {}
+    if profile not in profiles:
+        raise ValueError(f"unknown retrieval profile: {profile}")
+    profile_config = dict(profiles[profile] or {})
+    merged = dict(config)
+    embedding = dict(merged.get("embedding") or {})
+    for key in (
+        "chunks_path",
+        "chunk_index_dir",
+        "lexical_index_dir",
+        "summary_publications_dir",
+        "document_summary_index_dir",
+        "procedure_summary_index_dir",
+    ):
+        if key in profile_config:
+            merged[key] = profile_config[key]
+    if profile_config.get("embedding_backend"):
+        embedding["backend"] = profile_config["embedding_backend"]
+    if profile_config.get("default_model"):
+        embedding["default_model"] = profile_config["default_model"]
+    merged["embedding"] = embedding
+    merged["active_profile"] = profile
+    return merged
 
 
 def redact_model_uri(model_uri: str) -> str:
@@ -155,6 +184,32 @@ def parse_embedding_response(payload: dict[str, Any]) -> list[float]:
     raise RuntimeError(f"embedding response has no vector fields: {list(payload)[:10]}")
 
 
+def parse_openai_embeddings_response(payload: dict[str, Any], *, expected_count: int) -> list[list[float]]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise RuntimeError(f"embedding response has no data list: {list(payload)[:10]}")
+    indexed_vectors: list[tuple[int, list[float]]] = []
+    for position, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise RuntimeError("embedding response contains non-object item")
+        vector = item.get("embedding")
+        if not isinstance(vector, list) or not vector:
+            raise RuntimeError("embedding response item has no embedding vector")
+        index = item.get("index")
+        indexed_vectors.append((int(index) if isinstance(index, int) else position, [float(value) for value in vector]))
+    indexed_vectors.sort(key=lambda item: item[0])
+    vectors = [vector for _, vector in indexed_vectors]
+    if len(vectors) != expected_count:
+        raise RuntimeError(f"embedding response count {len(vectors)} does not match requested count {expected_count}")
+    return vectors
+
+
+def redact_secret(text: str, secret: str | None) -> str:
+    if not secret:
+        return text
+    return text.replace(secret, "<redacted>")
+
+
 class RateLimitError(RuntimeError):
     def __init__(self, message: str, *, retry_after: float | None = None) -> None:
         super().__init__(message)
@@ -202,6 +257,104 @@ class LocalHashEmbeddingClient:
         return vector.astype(np.float32).tolist()
 
 
+@dataclass(frozen=True)
+class RouterAIEmbeddingConfig:
+    api_key: str
+    model: str = "baai/bge-m3"
+    base_url: str = "https://routerai.ru/api/v1"
+    timeout_seconds: float = 60.0
+    max_retries: int = 4
+    retry_backoff_seconds: float = 2.0
+    max_input_chars: int = 1700
+    max_input_terms: int = 1000
+
+    @classmethod
+    def from_mapping(cls, mapping: dict[str, Any], *, api_key: str) -> "RouterAIEmbeddingConfig":
+        return cls(
+            api_key=api_key,
+            model=str(mapping.get("model") or "baai/bge-m3"),
+            base_url=str(mapping.get("base_url") or "https://routerai.ru/api/v1"),
+            timeout_seconds=float(mapping.get("timeout_seconds") or 60.0),
+            max_retries=int(mapping.get("max_retries") or 4),
+            retry_backoff_seconds=float(mapping.get("retry_backoff_seconds") or 2.0),
+            max_input_chars=int(mapping.get("max_input_chars") or 1700),
+            max_input_terms=int(mapping.get("max_input_terms") or 1000),
+        )
+
+    def embeddings_url(self) -> str:
+        return self.base_url.rstrip("/") + "/embeddings"
+
+
+class RouterAIEmbeddingClient:
+    backend = "routerai"
+    supports_batch = True
+
+    def __init__(self, config: RouterAIEmbeddingConfig, *, session: requests.Session | None = None) -> None:
+        self.config = config
+        self.model_uri = f"routerai://{config.model}"
+        self.session = session or requests.Session()
+        self.dimension: int | None = None
+
+    def embed_text(self, text: str) -> list[float]:
+        return self.embed_texts([text])[0]
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        prepared_texts = [
+            prepare_embedding_text(text, max_chars=self.config.max_input_chars, max_terms=self.config.max_input_terms)
+            for text in texts
+        ]
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.config.model,
+            "input": prepared_texts,
+            "encoding_format": "float",
+        }
+        last_error: Exception | None = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                response = self.session.post(
+                    self.config.embeddings_url(),
+                    headers=headers,
+                    json=payload,
+                    timeout=self.config.timeout_seconds,
+                )
+                if response.status_code == 429:
+                    raise RateLimitError(
+                        f"HTTP 429: {redact_secret(response.text[:500], self.config.api_key)}",
+                        retry_after=retry_after_seconds(response),
+                    )
+                if response.status_code in {500, 502, 503, 504}:
+                    raise TransientEmbeddingError(
+                        f"transient HTTP {response.status_code}: {redact_secret(response.text[:500], self.config.api_key)}"
+                    )
+                if response.status_code >= 400:
+                    raise NonRetryableEmbeddingError(
+                        f"HTTP {response.status_code}: {redact_secret(response.text[:500], self.config.api_key)}"
+                    )
+                response.raise_for_status()
+                vectors = parse_openai_embeddings_response(response.json(), expected_count=len(prepared_texts))
+                if vectors:
+                    self.dimension = len(vectors[0])
+                return vectors
+            except NonRetryableEmbeddingError:
+                raise
+            except (requests.RequestException, RuntimeError, RateLimitError) as exc:
+                last_error = exc
+                if attempt >= self.config.max_retries:
+                    break
+                if isinstance(exc, RateLimitError):
+                    sleep_seconds = exc.retry_after if exc.retry_after is not None else self.config.retry_backoff_seconds * (attempt + 1)
+                else:
+                    sleep_seconds = self.config.retry_backoff_seconds * (attempt + 1)
+                time.sleep(sleep_seconds + random.uniform(0.0, 0.25))
+        raise RuntimeError(f"RouterAI embedding request failed: {redact_secret(str(last_error), self.config.api_key)}")
+
+
 def prepare_embedding_text(text: str, *, max_chars: int, max_terms: int | None = None) -> str:
     prepared = WHITESPACE_RE.sub(" ", str(text or "")).strip()
     if max_terms and max_terms > 0:
@@ -233,7 +386,19 @@ def embedding_input_text(client: EmbeddingClient, text: str) -> str:
             max_chars=client.config.max_input_chars,
             max_terms=client.config.max_input_terms,
         )
+    if isinstance(client, RouterAIEmbeddingClient):
+        return prepare_embedding_text(
+            text,
+            max_chars=client.config.max_input_chars,
+            max_terms=client.config.max_input_terms,
+        )
     return text
+
+
+def embed_texts(client: EmbeddingClient, texts: list[str]) -> list[list[float]]:
+    if hasattr(client, "embed_texts"):
+        return getattr(client, "embed_texts")(texts)
+    return [client.embed_text(text) for text in texts]
 
 
 def add_token(vector: np.ndarray, token: str, *, weight: float) -> None:
@@ -256,6 +421,20 @@ def build_embedding_client(
     if backend == "local-hash":
         local_config = retrieval_config.get("local_hash") or {}
         return LocalHashEmbeddingClient(dimension=int(local_config.get("dimension") or 384))
+    if backend == "routerai":
+        router_config = dict(retrieval_config.get("routerai") or {})
+        embedding_config = retrieval_config.get("embedding") or {}
+        router_config.setdefault("max_input_chars", embedding_config.get("max_input_chars") or 1700)
+        router_config.setdefault("max_input_terms", embedding_config.get("max_input_terms") or 1000)
+        router_config.setdefault("api_key", os.getenv("ROUTERAI_API_KEY"))
+        router_config.setdefault("model", os.getenv("ROUTERAI_EMBEDDING_MODEL") or "baai/bge-m3")
+        router_config.setdefault("base_url", os.getenv("ROUTERAI_BASE_URL") or "https://routerai.ru/api/v1")
+        router_config.setdefault("timeout_seconds", os.getenv("ROUTERAI_TIMEOUT_SECONDS") or 60.0)
+        if not router_config.get("api_key"):
+            raise RuntimeError("ROUTERAI_API_KEY must be set for routerai embeddings")
+        return RouterAIEmbeddingClient(
+            RouterAIEmbeddingConfig.from_mapping(router_config, api_key=str(router_config["api_key"]))
+        )
     if backend != "yandex":
         raise ValueError(f"unsupported embedding backend: {backend}")
     if not api_key or not folder_id:

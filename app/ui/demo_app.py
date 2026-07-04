@@ -34,7 +34,7 @@ from app.query.cockpit import (  # noqa: E402
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.local_orchestrator import run_local_knowledge  # noqa: E402
 from app.query.comparison import compare_methods  # noqa: E402
-from app.query.orchestrator import run_query_orchestration  # noqa: E402
+from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.planner import plan_query  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
@@ -139,6 +139,29 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
         st.info(empty_text)
         return
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
+
+
+def render_llm_response(response: Any | None, *, title: str = "Provider answer") -> None:
+    if response is None:
+        return
+    metadata = response.metadata() if hasattr(response, "metadata") else {}
+    st.subheader(title)
+    st.text_area("Answer", value=getattr(response, "text", "") or "", height=190)
+    render_table(
+        [
+            {
+                "provider": metadata.get("provider"),
+                "model": metadata.get("model"),
+                "status": metadata.get("status"),
+                "fallback_reason": metadata.get("fallback_reason"),
+                "used_evidence": metadata.get("used_evidence"),
+            }
+        ],
+        empty_text="No provider metadata.",
+    )
+    warnings = metadata.get("warnings") or []
+    if warnings:
+        render_warnings([str(item) for item in warnings])
 
 
 def render_cockpit_styles() -> None:
@@ -1093,10 +1116,24 @@ def render_run(run: Any) -> None:
                     include_web=bool(run.request.sources),
                     web_sources=run.request.sources,
                     web_top_k=min(run.request.top_k, 10),
+                    web_deep_search=run.request.deep_search == "top5",
                     generate_pdf_report=False,
                 )
+                try:
+                    st.session_state["last_route_llm_response"] = answer_with_provider_router(
+                        run.request.query,
+                        st.session_state["last_route_orchestration"],
+                        project_root=ROOT,
+                    )
+                    st.session_state.pop("last_route_llm_error", None)
+                except Exception as exc:  # noqa: BLE001 - GUI should still show retrieved evidence.
+                    st.session_state["last_route_llm_response"] = None
+                    st.session_state["last_route_llm_error"] = str(exc)[:400]
         route_result = st.session_state.get("last_route_orchestration")
         if route_result:
+            if st.session_state.get("last_route_llm_error"):
+                st.warning(st.session_state["last_route_llm_error"])
+            render_llm_response(st.session_state.get("last_route_llm_response"), title="Provider-routed answer")
             render_route_orchestration_result(route_result)
         else:
             st.info("Run route orchestrator to execute the planned raw, summary, table, graph and web routes.")
@@ -1360,8 +1397,22 @@ def main() -> None:
                     include_web=web_search,
                     web_sources=source_options,
                     web_top_k=min(top_k, 10),
+                    web_deep_search=deep_search,
                     generate_pdf_report=False,
                 )
+                try:
+                    st.session_state["last_route_llm_response"] = answer_with_provider_router(
+                        rd_question,
+                        st.session_state["last_route_orchestration"],
+                        project_root=ROOT,
+                    )
+                    st.session_state.pop("last_route_llm_error", None)
+                except Exception as exc:  # noqa: BLE001 - keep retrieval result visible.
+                    st.session_state["last_route_llm_response"] = None
+                    st.session_state["last_route_llm_error"] = str(exc)[:400]
+            if st.session_state.get("last_route_llm_error"):
+                st.warning(st.session_state["last_route_llm_error"])
+            render_llm_response(st.session_state.get("last_route_llm_response"), title="Provider-routed answer")
             render_route_orchestration_result(st.session_state["last_route_orchestration"])
             local_rendered = True
 

@@ -11,8 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from app.index.embeddings import build_embedding_client, load_retrieval_config
-from app.index.lexical import LexicalIndex
+from app.index.embeddings import load_retrieval_config
 from app.index.vector_store import (
     MANIFEST_FILE,
     METADATA_FILE,
@@ -20,7 +19,7 @@ from app.index.vector_store import (
     load_manifest,
     load_metadata,
 )
-from app.rag.retrieval import dense_search, lexical_search, materialize_results, reciprocal_rank_fusion
+from app.rag.retrieval import hybrid_search
 
 
 WORD_RE = re.compile(r"[\w.+#%-]+", re.UNICODE)
@@ -33,6 +32,7 @@ class SearchCase:
     min_unique_terms: int = 2
     min_top1_terms: int = 1
     min_results: int = 3
+    disallowed_top1_terms: tuple[str, ...] = ()
 
 
 @dataclass
@@ -60,6 +60,7 @@ class SearchValidationResult:
     top1_terms_found: list[str]
     result_count: int
     top_results: list[dict[str, Any]]
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     issues: list[ValidationIssue] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -71,11 +72,19 @@ class SearchValidationResult:
             "top1_terms_found": self.top1_terms_found,
             "result_count": self.result_count,
             "top_results": self.top_results,
+            "diagnostics": self.diagnostics,
             "issues": [issue.as_dict() for issue in self.issues],
         }
 
 
 DEFAULT_SEARCH_CASES = [
+    SearchCase(
+        query="никелевая руда",
+        expected_terms=("никел", "ni", "nickel", "руд", "ore"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+        disallowed_top1_terms=("gold", "au", "золот"),
+    ),
     SearchCase(
         query="никелевые концентраты обжиг",
         expected_terms=("никел", "концентрат", "обжиг", "плавк"),
@@ -103,6 +112,48 @@ DEFAULT_SEARCH_CASES = [
     SearchCase(
         query="серная кислота автоклавное окисление",
         expected_terms=("сернокислот", "серн", "автоклав", "окисл"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="Ni ore flotation",
+        expected_terms=("ni", "nickel", "ore", "flotation", "флотац", "руд"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="сульфидные медно никелевые руды",
+        expected_terms=("сульфид", "мед", "никел", "руд"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="никелевый концентрат флотация",
+        expected_terms=("никел", "концентрат", "флотац"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="медные концентраты плавка",
+        expected_terms=("мед", "концентрат", "плавк"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="кобальт рафинирование никеля",
+        expected_terms=("кобальт", "никел", "рафинир"),
+        min_unique_terms=2,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="кучное биовыщелачивание никеля",
+        expected_terms=("биовыщелач", "выщелач", "никел"),
+        min_unique_terms=1,
+        min_top1_terms=1,
+    ),
+    SearchCase(
+        query="хвосты обогащения никель",
+        expected_terms=("хвост", "обогащ", "никел"),
         min_unique_terms=2,
         min_top1_terms=1,
     ),
@@ -236,62 +287,67 @@ def run_search_case(
     allow_network: bool,
 ) -> SearchValidationResult:
     issues: list[ValidationIssue] = []
-    manifest = load_manifest(index_dir)
     search_config = retrieval_config.get("search") or {}
     dense_top_k = max(top_k, int(search_config.get("dense_top_k") or 50))
     lexical_top_k = max(top_k, int(search_config.get("lexical_top_k") or 50))
+    summary_top_k = max(top_k, int(search_config.get("summary_top_k") or 30))
+    table_top_k = max(top_k, int(search_config.get("table_top_k") or 8))
+    graph_top_k = max(top_k, int(search_config.get("graph_top_k") or 8))
     preview_chars = int(search_config.get("snippet_chars") or 700)
-    rrf_k = int(search_config.get("rrf_k") or 60)
-    vector_batch_size = int(search_config.get("vector_batch_size") or 8192)
+    manifest = load_manifest(index_dir)
     backend = str(manifest.get("embedding_backend") or (retrieval_config.get("embedding") or {}).get("backend") or "yandex")
 
-    dense_hits = []
-    lexical_hits = []
-    if mode in {"hybrid", "dense"}:
-        if backend == "yandex" and not allow_network:
-            issues.append(
-                ValidationIssue(
-                    "error",
-                    "network_required",
-                    "Yandex index needs a live query embedding; rerun with --allow-network or validate a local-hash index",
-                )
+    try:
+        results, diagnostics = hybrid_search(
+            query=case.query,
+            retrieval_config=retrieval_config,
+            index_dir=index_dir,
+            lexical_dir=lexical_dir,
+            chunks_path=chunks_path,
+            top_k=top_k,
+            mode=mode,  # type: ignore[arg-type]
+            dense_top_k=dense_top_k,
+            lexical_top_k=lexical_top_k,
+            summary_top_k=summary_top_k,
+            table_top_k=table_top_k,
+            graph_top_k=graph_top_k,
+            snippet_chars=0,
+            allow_network=allow_network,
+            embedding_backend=backend,
+            model="auto",
+            api_key=os.getenv("YANDEX_API_KEY"),
+            folder_id=os.getenv("YANDEX_FOLDER_ID"),
+            root=root,
+            publications_dir=root / "data" / "processed" / "publications",
+            document_summary_index_dir=root / "data" / "indexes" / "document_summaries",
+            procedure_summary_index_dir=root / "data" / "indexes" / "procedure_summaries",
+            table_roots=(root / "data" / "parsed" / "spreadsheets_csv",),
+            documents_path=root / "data" / "parsed" / "documents.jsonl",
+            tables_path=root / "data" / "parsed" / "tables.jsonl",
+            graph_nodes_path=root / "data" / "index" / "knowledge_graph_nodes.jsonl",
+            graph_edges_path=root / "data" / "index" / "knowledge_graph_edges.jsonl",
+            include_summaries=True,
+            include_tables=True,
+            include_graph=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - validation must produce an actionable report.
+        diagnostics = None
+        results = []
+        issues.append(
+            ValidationIssue(
+                "error",
+                "search_failed",
+                "retrieval failed for the search case",
+                {"error": str(exc)[:500]},
             )
-        else:
-            model_selection = "fallback" if manifest.get("model_selection") == "fallback" else "query"
-            try:
-                client = build_embedding_client(
-                    backend=backend,
-                    retrieval_config=retrieval_config,
-                    kind="query",
-                    fallback_model=model_selection == "fallback",
-                    api_key=os.getenv("YANDEX_API_KEY"),
-                    folder_id=os.getenv("YANDEX_FOLDER_ID"),
-                )
-                dense_hits = dense_search(index_dir, client.embed_text(case.query), top_k=dense_top_k, batch_size=vector_batch_size)
-            except Exception as exc:  # noqa: BLE001 - validation must produce an actionable report.
-                issues.append(
-                    ValidationIssue(
-                        "error",
-                        "dense_query_embedding_failed",
-                        "dense query embedding failed; check Yandex credentials and model permissions",
-                        {"error": str(exc)[:500]},
-                    )
-                )
-    if mode in {"hybrid", "lexical"} and LexicalIndex(lexical_dir).exists():
-        lexical_hits = lexical_search(lexical_dir, case.query, top_k=lexical_top_k)
-
-    if mode == "dense":
-        ranked_rows = [(hit.row_id, hit.score, {"dense": hit.score}) for hit in dense_hits[:top_k]]
-    elif mode == "lexical":
-        ranked_rows = [(hit.row_id, hit.score, {"lexical": hit.score}) for hit in lexical_hits[:top_k]]
-    else:
-        ranked_rows = reciprocal_rank_fusion(dense_hits=dense_hits, lexical_hits=lexical_hits, rrf_k=rrf_k, top_k=top_k)
-    results = materialize_results(ranked_rows=ranked_rows, index_dir=index_dir, chunks_path=chunks_path, snippet_chars=0)
+        )
 
     expected = [term.lower().replace("ё", "е") for term in case.expected_terms]
+    disallowed = [term.lower().replace("ё", "е") for term in case.disallowed_top1_terms]
     corpus = "\n".join(f"{result.source_path}\n{result.text}" for result in results)
     unique_terms = matching_terms(corpus, expected)
     top1_terms = matching_terms(f"{results[0].source_path}\n{results[0].text}", expected) if results else []
+    top1_disallowed = matching_terms(f"{results[0].source_path}\n{results[0].text}", disallowed) if results and disallowed else []
 
     if len(results) < case.min_results:
         issues.append(
@@ -320,6 +376,15 @@ def run_search_case(
                 {"found": top1_terms, "expected": expected, "min_top1_terms": case.min_top1_terms},
             )
         )
+    if top1_disallowed and not top1_terms:
+        issues.append(
+            ValidationIssue(
+                "error",
+                "top1_matches_disallowed_terms",
+                "top-1 result is dominated by terms that should not lead this query",
+                {"found": top1_disallowed, "disallowed": disallowed},
+            )
+        )
 
     top_results = []
     for result in results[:top_k]:
@@ -335,6 +400,7 @@ def run_search_case(
         top1_terms_found=top1_terms,
         result_count=len(results),
         top_results=top_results,
+        diagnostics=diagnostics.as_dict() if diagnostics else {},
         issues=issues,
     )
 
@@ -388,6 +454,11 @@ def run_validation(
         "mode": mode,
         "top_k": top_k,
         "allow_network": allow_network,
+        "benchmark": {
+            "query_count": len(search_results),
+            "passed": sum(1 for result in search_results if result.status == "pass"),
+            "failed": sum(1 for result in search_results if result.status != "pass"),
+        },
         "artifacts": artifact_summary,
         "lexical": lexical_summary,
         "search_cases": [result.as_dict() for result in search_results],

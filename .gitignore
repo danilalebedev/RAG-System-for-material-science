@@ -15,8 +15,15 @@ env/
 
 # Secrets
 .env
+.env.*
+!.env.example
+*.env
 *.key
 *.pem
+*.p12
+*.pfx
+secrets/
+secret/
 router_ai_API.docx
 
 # Local data artifacts

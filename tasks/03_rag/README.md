@@ -356,3 +356,23 @@ Full build готов, если:
 8. Добавить lexical baseline.
 9. Добавить hybrid RRF.
 10. После готовности graph/procedure outputs подключить их как дополнительные retrieval streams.
+
+## Yandex Summary Index Automation
+
+Yandex remains the default embedding provider. The recovery path for summary RAG is documented in
+[`../08_yandex_summary_vectorization/`](../08_yandex_summary_vectorization/).
+
+Relevant files:
+
+- `app/index/summaries.py`
+- `scripts/build_summary_indexes.py`
+- `scripts/watch_yandex_and_build_summary_index.py`
+
+Generated outputs:
+
+- `data/indexes/document_summaries/*`
+- `data/indexes/procedure_summaries/*`
+- `logs/yandex_summary_watch/*`
+
+RouterAI is documented as an inference fallback in
+[`../09_inference_provider_fallback/`](../09_inference_provider_fallback/), not as the primary embedding path for this step.

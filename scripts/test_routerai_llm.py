@@ -3,15 +3,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.llm.provider_router import ProviderRouter
+from app.llm.routerai_client import RouterAILLMClient, RouterAILLMConfig
 
 
 def main() -> None:
-    router = ProviderRouter.from_env(root=Path(__file__).resolve().parents[1])
-    response = router.ask(
-        "Ответь коротко: API работает?",
+    root = Path(__file__).resolve().parents[1]
+    load_dotenv(root / ".env")
+    client = RouterAILLMClient(RouterAILLMConfig.from_env(load_dotenv_file=False))
+    response = client.generate(
+        [{"role": "user", "content": "Ответь коротко: RouterAI API работает?"}],
         max_tokens=100,
         temperature=0.2,
     )
@@ -21,11 +25,8 @@ def main() -> None:
         f"provider={response.provider}; "
         f"model={response.model}; "
         f"status={response.status}; "
-        f"fallback_reason={response.fallback_reason or 'none'}; "
         f"used_evidence={str(response.used_evidence).lower()}"
     )
-    for warning in response.warnings:
-        print(f"warning={warning}")
 
 
 if __name__ == "__main__":

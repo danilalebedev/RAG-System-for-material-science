@@ -595,6 +595,50 @@ def test_compare_methods_finds_shared_and_unique_methods() -> None:
     assert comparison.differing_conditions
 
 
+def test_compare_methods_uses_local_and_web_document_summaries() -> None:
+    local_publications = [{"doc_id": "doc1", "title": "Local nickel ore flotation"}]
+    local_document_summaries = [
+        {
+            "doc_id": "doc1",
+            "document_summary_id": "docsum1",
+            "summary": "Nickel ore flotation improves Ni recovery.",
+            "materials": ["nickel ore"],
+            "processes": ["flotation"],
+            "key_findings": ["collector dosage changes recovery"],
+            "additional_domain_fields": {"numeric_conditions": ["pH 9"], "analysis_results": ["88% Ni recovery"]},
+            "confidence": 0.82,
+        }
+    ]
+    source = LiteratureSearchResult(result_id="s2_2", source="semantic_scholar", title="Web nickel ore flotation")
+    deep = DeepSearchResult(
+        result_id="s2_2",
+        source_result=source,
+        document_summary={
+            "document_summary_id": "webdocsum1",
+            "summary": "Nickel ore flotation with xanthate improves recovery.",
+            "materials": ["nickel ore"],
+            "processes": ["flotation"],
+            "analysis_results": ["91% Ni recovery"],
+            "confidence": 0.75,
+        },
+    )
+
+    comparison = compare_methods(
+        query="nickel ore flotation recovery",
+        local_publications=local_publications,
+        local_document_summaries=local_document_summaries,
+        local_procedures=[],
+        web_deep_results=[deep],
+    )
+
+    scopes = {row["scope"] for row in comparison.rows}
+    assert scopes == {"local", "web"}
+    assert {row["record_type"] for row in comparison.rows} == {"document_summary"}
+    assert any("88% Ni recovery" in json.dumps(row.get("numeric_results"), ensure_ascii=False) for row in comparison.rows)
+    assert any("91% Ni recovery" in json.dumps(row.get("numeric_results"), ensure_ascii=False) for row in comparison.rows)
+    assert comparison.confirmed_methods
+
+
 def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     source = LiteratureSearchResult(
         result_id="web_1",

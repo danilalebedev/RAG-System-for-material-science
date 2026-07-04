@@ -18,7 +18,7 @@ from app.web_search.comparison import (
     load_local_publication_records,
     search_local_summaries,
 )
-from app.web_search.deep_search import build_yandex_client_from_env, run_deep_search
+from app.web_search.deep_search import build_router_completion_client_from_env, run_deep_search
 from app.web_search.journal_quality import load_quartile_map
 from app.web_search.keywords import extract_keywords
 from app.web_search.open_access import OpenAccessResolver
@@ -134,10 +134,10 @@ def enrich_open_access(results: list[Any], warnings: list[str], *, limit: int = 
         result.open_access = oa
 
 
-def yandex_client(project_root: Path, yandex_client_arg: Any | None = None) -> Any | None:
+def llm_completion_client(project_root: Path, yandex_client_arg: Any | None = None) -> Any | None:
     if yandex_client_arg is not None:
         return yandex_client_arg
-    return build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
+    return build_router_completion_client_from_env(project_root)
 
 
 def run_literature_search(
@@ -193,7 +193,7 @@ def run_literature_search(
 
     deep_results = []
     if request.deep_search == "top5":
-        llm_client = yandex_client if yandex_client is not None else build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
+        llm_client = llm_completion_client(project_root, yandex_client)
         deep_results = run_deep_search(
             results=results,
             output_dir=output_dir,
@@ -206,6 +206,7 @@ def run_literature_search(
     comparison = compare_methods(
         query=request.query,
         local_publications=local_publications,
+        local_document_summaries=local_document_summaries,
         local_procedures=local_procedures,
         web_deep_results=deep_results,
     )
@@ -239,18 +240,19 @@ def run_deep_search_for_existing_run(
         }
     )
     output_dir = run.output_dir or (project_root / "data" / "processed" / "web_search" / safe_run_id(request.run_id or utc_run_id(request.query)))
-    local_publications, _, local_procedures = publication_records(project_root, request.include_local_search)
+    local_publications, local_document_summaries, local_procedures = publication_records(project_root, request.include_local_search)
     deep_results = run_deep_search(
         results=run.results,
         output_dir=output_dir,
         mode="top5",
-        client=yandex_client if yandex_client is not None else build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json"),
+        client=yandex_client if yandex_client is not None else build_router_completion_client_from_env(project_root),
         fetch_excerpts=request.fetch_excerpts,
         limit=request.deep_search_limit,
     )
     comparison = compare_methods(
         query=request.query,
         local_publications=local_publications,
+        local_document_summaries=local_document_summaries,
         local_procedures=local_procedures,
         web_deep_results=deep_results,
     )

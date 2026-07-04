@@ -47,7 +47,7 @@ client = OpenAI(
 )
 
 resp = client.chat.completions.create(
-    model="deepseek/deepseek-v4-pro",
+    model="deepseek/deepseek-chat-v3.1",
     messages=[
         {"role": "system", "content": "Отвечай строго по источникам."},
         {"role": "user", "content": "Кратко объясни, что такое GraphRAG."},
@@ -79,7 +79,7 @@ schema_prompt = """
 """
 
 resp = client.chat.completions.create(
-    model="deepseek/deepseek-v4-pro",
+    model="deepseek/deepseek-chat-v3.1",
     messages=[
         {"role": "system", "content": "Ты extractor научных фактов. Не добавляй факты без evidence."},
         {"role": "user", "content": schema_prompt + "\n\nTEXT:\n" + chunk_text},
@@ -160,9 +160,9 @@ RouterAI позволяет отправлять PDF прямо в chat completi
 - JSON mode не гарантирует истинность фактов; нужна проверка evidence span.
 - Стоимость и latency нужно логировать как отдельные benchmark metrics.
 
-## DeepSeek V4 Pro
+## DeepSeek Chat V3.1
 
-Публичный `/api/v1/models` на момент проверки показывает `deepseek/deepseek-v4-pro`:
+Runtime fallback uses `deepseek/deepseek-chat-v3.1` because it returned non-empty chat content in the RouterAI smoke check:
 
 - output modality: text;
 - context length: 1,048,576;

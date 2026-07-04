@@ -45,3 +45,9 @@ document-level summaries; `tasks/02_summary_graph/` читает эти outputs 
 - Для долгих API-задач обязателен resume/cache.
 - Если меняется контракт JSONL, обновить `DEVELOPMENT_PLAN.md` и релевантный
   файл в `tasks/<step>/README.md`.
+
+## Active New Workstreams
+
+- [`08_yandex_summary_vectorization/`](08_yandex_summary_vectorization/) - Yandex-first watcher and reproducible vector indexes for document/procedure summaries.
+- [`09_inference_provider_fallback/`](09_inference_provider_fallback/) - Yandex-first generation with RouterAI fallback and deterministic local degradation.
+- [`10_graph_enrichment/`](10_graph_enrichment/) - plan and boundaries for enriching the graph into Material -> Experiment/Process -> Property -> Publication paths.

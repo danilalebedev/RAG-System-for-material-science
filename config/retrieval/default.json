@@ -2,6 +2,27 @@
   "chunks_path": "data/parsed/chunks.jsonl",
   "chunk_index_dir": "data/indexes/chunks",
   "lexical_index_dir": "data/indexes/lexical",
+  "summary_publications_dir": "data/processed/publications",
+  "document_summary_index_dir": "data/indexes/document_summaries",
+  "procedure_summary_index_dir": "data/indexes/procedure_summaries",
+  "profiles": {
+    "yandex": {
+      "chunk_index_dir": "data/indexes/chunks",
+      "lexical_index_dir": "data/indexes/lexical",
+      "document_summary_index_dir": "data/indexes/document_summaries",
+      "procedure_summary_index_dir": "data/indexes/procedure_summaries",
+      "embedding_backend": "yandex",
+      "default_model": "fallback"
+    },
+    "routerai_bge_m3": {
+      "chunk_index_dir": "data/indexes/chunks_routerai_bge_m3",
+      "lexical_index_dir": "data/indexes/lexical_routerai_bge_m3",
+      "document_summary_index_dir": "data/indexes/document_summaries_routerai_bge_m3",
+      "procedure_summary_index_dir": "data/indexes/procedure_summaries_routerai_bge_m3",
+      "embedding_backend": "routerai",
+      "default_model": "doc"
+    }
+  },
   "embedding": {
     "backend": "yandex",
     "default_model": "fallback",
@@ -23,14 +44,49 @@
   },
   "build": {
     "batch_size": 50,
+    "embedding_batch_size": 64,
     "sleep_seconds": 0.0
+  },
+  "routerai": {
+    "base_url": "https://routerai.ru/api/v1",
+    "model": "baai/bge-m3",
+    "timeout_seconds": 60,
+    "max_retries": 4,
+    "retry_backoff_seconds": 2.0,
+    "max_input_chars": 1700,
+    "max_input_terms": 1000
   },
   "search": {
     "top_k": 10,
     "dense_top_k": 50,
     "lexical_top_k": 50,
+    "summary_top_k": 30,
+    "table_top_k": 8,
+    "graph_top_k": 8,
     "rrf_k": 60,
     "snippet_chars": 700,
-    "vector_batch_size": 8192
+    "vector_batch_size": 8192,
+    "weights": {
+      "dense": 1.0,
+      "lexical": 1.1,
+      "summary_lexical": 0.9,
+      "summary_vector": 0.9,
+      "phrase": 0.08,
+      "domain": 0.12,
+      "field": 0.04,
+      "table": 0.85,
+      "graph": 0.75,
+      "freshness": 0.02,
+      "confidence": 0.02
+    }
+  },
+  "domain_lexicon": {
+    "nickel": ["nickel", "ni", "никель", "никеля", "никелевый", "никелевая", "никелевые", "никелевых", "никелистый"],
+    "copper": ["copper", "cu", "медь", "меди", "медный", "медные", "медных"],
+    "cobalt": ["cobalt", "co", "кобальт", "кобальта", "кобальтовый"],
+    "ore": ["ore", "ores", "руда", "руды", "руд", "рудный", "рудного", "сырье", "сырья"],
+    "concentrate": ["concentrate", "concentrates", "концентрат", "концентраты", "концентратов"],
+    "leaching": ["leaching", "выщелачивание", "выщелачивания", "выщелачиван", "гидрометаллургия"],
+    "flotation": ["flotation", "флотация", "флотации", "флотационный", "флотационн"]
   }
 }
