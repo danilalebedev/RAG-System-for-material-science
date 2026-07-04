@@ -1,5 +1,8 @@
 ﻿from __future__ import annotations
 
+import zipfile
+from pathlib import Path
+
 from app.llm.types import LLMResponse
 from app.query.local_orchestrator import first_query
 from app.query.orchestrator import (
@@ -11,6 +14,7 @@ from app.query.orchestrator import (
     trim_rows_keep_diagnostics,
 )
 from app.query.planner import plan_query
+from app.query.reports import build_orchestration_archive, build_orchestration_exports
 
 
 def test_numeric_query_routes_to_tables_and_raw_rag() -> None:
@@ -213,3 +217,63 @@ def test_answer_with_provider_router_passes_retrieved_context(monkeypatch, tmp_p
     assert response.provider == "routerai"
     assert captured["question"] == "nickel ore"
     assert "Nickel ore flotation evidence" in str(captured["context"])
+
+
+def test_orchestration_exports_and_archive_include_local_sources(tmp_path: Path) -> None:
+    local_root = tmp_path / "data" / "raw"
+    local_root.mkdir(parents=True)
+    local_file = local_root / "local_method.txt"
+    local_file.write_text("local nickel alloy method", encoding="utf-8")
+    orchestration = QueryOrchestrationResult(
+        plan=plan_query("nickel alloy annealing hardness"),
+        retrieved_context=RetrievedContext(
+            raw=[
+                {
+                    "id": "raw:1",
+                    "source_type": "raw_chunk",
+                    "title": "Local method",
+                    "local_path": str(local_file),
+                    "preview": "Annealing evidence from local file.",
+                    "score": 0.91,
+                }
+            ],
+            summaries=[
+                {
+                    "id": "procedure_summary:1",
+                    "source_type": "procedure_summary",
+                    "title": "Procedure summary",
+                    "preview": "Heat treatment affects hardness.",
+                    "score": 0.8,
+                }
+            ],
+            web=[
+                {
+                    "id": "web:1",
+                    "source": "openalex",
+                    "title": "External paper",
+                    "url": "https://example.org/paper",
+                    "score": 0.7,
+                }
+            ],
+        ),
+        evidence=[],
+        answer_draft="draft answer",
+    )
+    answer = LLMResponse(text="RouterAI answer", provider="routerai", model="test", status="primary", used_evidence=True)
+    output_dir = tmp_path / "rag_run"
+
+    exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer)
+    assert exports["pdf"].exists()
+    assert exports["docx"].exists()
+    assert "RouterAI answer" in exports["markdown"].read_text(encoding="utf-8")
+
+    archive = build_orchestration_archive(orchestration, output_dir / "orchestration_artifacts.zip", answer=answer, project_root=tmp_path)
+    assert archive.exists()
+    with zipfile.ZipFile(archive) as zf:
+        names = set(zf.namelist())
+    assert "orchestration_payload.json" in names
+    assert "orchestration_web_links_manifest.json" in names
+    assert "orchestration_local_files_manifest.json" in names
+    assert "section_reports/full_report.pdf" in names
+    assert "section_reports/full_report.docx" in names
+    assert "local_publications/01_local_method.txt" in names

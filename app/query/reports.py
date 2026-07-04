@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -555,6 +557,14 @@ def write_json_report(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def safe_report_id(value: Any, *, prefix: str = "run") -> str:
+    text = compact_text(value, 220) or prefix
+    digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    slug = re.sub(r"[^A-Za-z0-9А-Яа-яЁё_.-]+", "_", text).strip("_")
+    slug = slug[:50].strip("_") or prefix
+    return f"{slug}_{digest}"
+
+
 def markdown_to_docx(text: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
@@ -659,6 +669,224 @@ def build_section_exports(run: Any, section: str, output_dir: Path | None = None
     docx_path = markdown_to_docx(markdown, output_dir / f"{safe_section}_report.docx")
     pdf_path = markdown_to_pdf(markdown, output_dir / f"{safe_section}_report.pdf")
     return {"markdown": md_path, "docx": docx_path, "pdf": pdf_path}
+
+
+def answer_metadata(answer: Any | None) -> dict[str, Any]:
+    if answer is None:
+        return {}
+    if hasattr(answer, "metadata"):
+        try:
+            return dict(answer.metadata())
+        except Exception:  # noqa: BLE001 - report generation should not fail on optional metadata.
+            return {}
+    if isinstance(answer, dict):
+        return answer
+    return {
+        "provider": getattr(answer, "provider", None),
+        "model": getattr(answer, "model", None),
+        "status": getattr(answer, "status", None),
+    }
+
+
+def answer_text(answer: Any | None, fallback: str = "") -> str:
+    if answer is None:
+        return fallback
+    return compact_text(getattr(answer, "text", answer), 20_000) or fallback
+
+
+def orchestration_query(orchestration: Any, query: str | None = None) -> str:
+    rewrite = getattr(orchestration, "query_rewrite", None) or {}
+    plan = getattr(orchestration, "plan", None)
+    return compact_text(
+        query
+        or rewrite.get("corrected_query")
+        or getattr(plan, "original_query", "")
+        or "",
+        500,
+    )
+
+
+def orchestration_context(orchestration: Any) -> dict[str, list[dict[str, Any]]]:
+    context = getattr(orchestration, "retrieved_context", None)
+    if context is None:
+        return {"raw": [], "summaries": [], "tables": [], "graph": [], "web": []}
+    if hasattr(context, "as_dict"):
+        return context.as_dict()
+    return dict(context)
+
+
+def orchestration_all_rows(orchestration: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for section, section_rows in orchestration_context(orchestration).items():
+        for row in section_rows or []:
+            enriched = dict(row)
+            enriched.setdefault("route", section)
+            rows.append(enriched)
+    return rows
+
+
+def row_locator(row: dict[str, Any]) -> str:
+    return compact_text(
+        row.get("url")
+        or row.get("doi")
+        or row.get("local_path")
+        or row.get("source_path")
+        or row.get("path")
+        or row.get("node_id")
+        or "",
+        500,
+    )
+
+
+def row_title(row: dict[str, Any]) -> str:
+    return compact_text(
+        row.get("title")
+        or row.get("label")
+        or row.get("doc_id")
+        or row.get("id")
+        or row.get("source_path")
+        or "Evidence",
+        260,
+    )
+
+
+def append_orchestration_rows(lines: list[str], title: str, rows: list[dict[str, Any]], *, limit: int = 20) -> None:
+    lines.extend(["", f"## {title}"])
+    data_rows = [row for row in rows if row.get("source_type") != "diagnostics"]
+    if not data_rows:
+        lines.append("- Нет данных.")
+        return
+    for index, row in enumerate(data_rows[:limit], start=1):
+        score = row.get("score")
+        score_text = f"; score={score}" if score not in (None, "") else ""
+        locator = row_locator(row)
+        locator_text = f"; {locator}" if locator else ""
+        preview = compact_text(row.get("preview") or row.get("summary") or row.get("path") or row.get("relation"), 500)
+        lines.append(f"{index}. {row_title(row)}{score_text}{locator_text}")
+        if preview:
+            lines.append(f"   - {preview}")
+
+
+def orchestration_section_markdown(
+    orchestration: Any,
+    section: str,
+    *,
+    answer: Any | None = None,
+    query: str | None = None,
+) -> str:
+    section = section.lower().strip()
+    context = orchestration_context(orchestration)
+    plan = getattr(orchestration, "plan", None)
+    rewrite = getattr(orchestration, "query_rewrite", None) or {}
+    lines = [
+        f"# RAG отчет: {orchestration_query(orchestration, query)}",
+        "",
+        f"- Intent: {getattr(plan, 'intent', 'n/a')}",
+        f"- Routes: {', '.join(getattr(plan, 'routes', []) or []) or 'n/a'}",
+        f"- Answer format: {getattr(plan, 'answer_format', 'n/a')}",
+    ]
+    if rewrite:
+        lines.append(f"- Rewrite: {compact_text(rewrite.get('corrected_query'), 500)}")
+        lines.append(f"- Rewrite LLM: {rewrite.get('rewrite_used_llm')}")
+
+    if section in {"answer", "full"}:
+        lines.extend(["", "## Ответ", answer_text(answer, getattr(orchestration, "answer_draft", "")) or "Ответ не сгенерирован."])
+        metadata = answer_metadata(answer)
+        if metadata:
+            lines.extend(["", "## LLM metadata"])
+            for key, value in metadata.items():
+                lines.append(f"- {key}: {compact_text(value, 500)}")
+
+    if section in {"sources", "evidence", "full"}:
+        append_orchestration_rows(lines, "Raw RAG", context.get("raw") or [])
+        append_orchestration_rows(lines, "Summary RAG", context.get("summaries") or [])
+        append_orchestration_rows(lines, "Tables", context.get("tables") or [])
+        append_orchestration_rows(lines, "Graph", context.get("graph") or [])
+        append_orchestration_rows(lines, "Web", context.get("web") or [])
+
+    if section in {"comparison", "full"}:
+        lines.extend(["", "## Local vs Web / Method comparison"])
+        local_count = sum(len(context.get(name) or []) for name in ("raw", "summaries", "tables", "graph"))
+        web_count = len(context.get("web") or [])
+        lines.append(f"- Local evidence rows: {local_count}")
+        lines.append(f"- Web evidence rows: {web_count}")
+        procedure_rows = [
+            row for row in [*(context.get("summaries") or []), *(context.get("web") or [])]
+            if "procedure" in compact_text(row.get("source_type") or row.get("kind") or row.get("id")).casefold()
+        ]
+        append_orchestration_rows(lines, "Методики и режимы", procedure_rows, limit=30)
+
+    if section in {"graphs", "graph", "full"}:
+        append_orchestration_rows(lines, "Graph evidence", context.get("graph") or [], limit=40)
+
+    if section in {"charts", "full"}:
+        lines.extend(["", "## Coverage"])
+        for name, rows in context.items():
+            data_count = len([row for row in rows if row.get("source_type") != "diagnostics"])
+            lines.append(f"- {name}: {data_count}")
+
+    fallbacks = getattr(orchestration, "fallbacks", []) or []
+    if fallbacks and section in {"evidence", "full"}:
+        lines.extend(["", "## Fallbacks"])
+        for item in fallbacks:
+            lines.append(f"- {compact_text(item, 800)}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_orchestration_exports(
+    orchestration: Any,
+    section: str,
+    output_dir: Path | None = None,
+    *,
+    answer: Any | None = None,
+    query: str | None = None,
+) -> dict[str, Path]:
+    output_dir = output_dir or PROJECT_ROOT / "data" / "processed" / "rag_runs" / safe_report_id(orchestration_query(orchestration, query))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_section = re.sub(r"[^A-Za-z0-9_.-]+", "_", section.lower()).strip("_") or "section"
+    markdown = orchestration_section_markdown(orchestration, safe_section, answer=answer, query=query)
+    md_path = write_text_report(output_dir / f"{safe_section}_report.md", markdown)
+    docx_path = markdown_to_docx(markdown, output_dir / f"{safe_section}_report.docx")
+    pdf_path = markdown_to_pdf(markdown, output_dir / f"{safe_section}_report.pdf")
+    return {"markdown": md_path, "docx": docx_path, "pdf": pdf_path}
+
+
+def write_orchestration_payload(orchestration: Any, output_path: Path, *, answer: Any | None = None) -> Path:
+    payload = orchestration.as_dict() if hasattr(orchestration, "as_dict") else dict(orchestration)
+    if answer is not None:
+        payload = {**payload, "answer": {"text": answer_text(answer), "metadata": answer_metadata(answer)}}
+    return write_json_report(output_path, payload)
+
+
+def write_orchestration_web_manifest(orchestration: Any, output_path: Path) -> Path:
+    rows = []
+    for index, row in enumerate(orchestration_context(orchestration).get("web") or [], start=1):
+        rows.append(
+            {
+                "index": index,
+                "title": row_title(row),
+                "source": row.get("source"),
+                "doi": row.get("doi"),
+                "url": row.get("url") or row.get("doi"),
+                "score": row.get("score"),
+                "keyword_hits": row.get("keyword_hits") or [],
+            }
+        )
+    return write_json_report(output_path, {"web_links": rows, "note": "Web full text is not archived; links and summaries are included when available."})
+
+
+def write_orchestration_local_manifest(
+    orchestration: Any,
+    output_path: Path,
+    *,
+    project_root: Path | None = None,
+) -> tuple[Path, list[dict[str, Any]]]:
+    rows = [
+        row
+        for row in orchestration_all_rows(orchestration)
+        if any(row.get(key) for key in ("local_path", "source_path", "path", "file_name"))
+    ]
+    return write_local_files_manifest(SimpleNamespace(local_matches=rows), output_path, project_root=project_root)
 
 
 def write_links_csv(run: Any, output_path: Path) -> Path:
@@ -820,6 +1048,60 @@ def build_run_archive(run: Any, output_path: Path, *, project_root: Path | None 
         value = getattr(run, attr, None)
         if value:
             candidate_paths.append(Path(value))
+    seen: set[Path] = set()
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in candidate_paths:
+            if not path or not path.exists() or path in seen:
+                continue
+            seen.add(path)
+            try:
+                arcname = path.relative_to(run_dir)
+            except ValueError:
+                arcname = Path(path.name)
+            zf.write(path, arcname=str(arcname))
+        for item in local_manifest:
+            if item.get("status") != "included" or not item.get("archive_path") or not item.get("local_path"):
+                continue
+            source_path = Path(str(item["local_path"]))
+            if source_path.exists() and source_path.is_file() and is_within(source_path, project_root):
+                zf.write(source_path, arcname=str(item["archive_path"]))
+    return output_path
+
+
+def build_orchestration_archive(
+    orchestration: Any,
+    output_path: Path,
+    *,
+    answer: Any | None = None,
+    query: str | None = None,
+    project_root: Path | None = None,
+) -> Path:
+    project_root = project_root or PROJECT_ROOT
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_dir = output_path.parent
+    payload_path = write_orchestration_payload(orchestration, run_dir / "orchestration_payload.json", answer=answer)
+    web_manifest = write_orchestration_web_manifest(orchestration, run_dir / "orchestration_web_links_manifest.json")
+    local_manifest_path, local_manifest = write_orchestration_local_manifest(
+        orchestration,
+        run_dir / "orchestration_local_files_manifest.json",
+        project_root=project_root,
+    )
+    candidate_paths: list[Path] = [
+        payload_path,
+        web_manifest,
+        local_manifest_path,
+    ]
+    for section in ("full", "answer", "sources", "comparison", "evidence", "graphs", "charts"):
+        candidate_paths.extend(
+            build_orchestration_exports(
+                orchestration,
+                section,
+                run_dir / "section_reports",
+                answer=answer,
+                query=query,
+            ).values()
+        )
+
     seen: set[Path] = set()
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in candidate_paths:

@@ -17,6 +17,8 @@ if str(ROOT) not in sys.path:
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
+    build_orchestration_archive,
+    build_orchestration_exports,
     build_section_exports,
     build_run_archive,
     comparison_insights,
@@ -24,6 +26,7 @@ from app.query.reports import (  # noqa: E402
     repair_mojibake,
     result_link,
     run_overall_summary,
+    safe_report_id,
     source_counts,
     year_counts,
 )
@@ -224,25 +227,52 @@ def render_download(path: Path | None, label: str, mime: str) -> None:
     st.download_button(label, data=data, file_name=Path(path).name, mime=mime, use_container_width=True)
 
 
-def render_reports(run: Any | None) -> None:
-    if run is None:
-        st.info("Отчет появится после web-search.")
+def orchestration_output_dir(record: dict[str, Any]) -> Path:
+    run_id = safe_report_id(f"{record.get('created_at', '')}_{record.get('query', '')}", prefix="rag")
+    return ROOT / "data" / "processed" / "rag_runs" / run_id
+
+
+def render_reports(record: dict[str, Any]) -> None:
+    run = record.get("literature_run")
+    orchestration = record.get("orchestration")
+    answer = record.get("answer")
+    query = record.get("query")
+    if run is None and orchestration is None:
+        st.info("Отчет появится после поиска.")
         return
+    if run is not None:
+        st.markdown("**Web / literature reports**")
+        cols = st.columns(3)
+        with cols[0]:
+            render_download(getattr(run, "links_report_pdf_path", None), "PDF: только ссылки", "application/pdf")
+            render_download(getattr(run, "links_report_docx_path", None), "DOCX: только ссылки", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with cols[1]:
+            render_download(getattr(run, "deep_report_pdf_path", None), "PDF: Deep Search", "application/pdf")
+            render_download(getattr(run, "deep_report_docx_path", None), "DOCX: Deep Search", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with cols[2]:
+            render_download(getattr(run, "report_pdf_path", None), "PDF: полный отчет", "application/pdf")
+            render_download(getattr(run, "report_docx_path", None), "DOCX: полный отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if getattr(run, "full_run_json_path", None):
+                render_download(run.full_run_json_path, "JSON: все данные", "application/json")
+        if getattr(run, "output_dir", None):
+            archive = build_run_archive(run, Path(run.output_dir) / "run_artifacts.zip")
+            render_download(archive, "ZIP: web/literature artifacts", "application/zip")
+
+    if orchestration is None:
+        return
+    st.markdown("**Local RAG / orchestration reports**")
+    output_dir = orchestration_output_dir(record)
+    full_exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer, query=query)
+    payload_path = output_dir / "orchestration_payload.json"
+    archive = build_orchestration_archive(orchestration, output_dir / "orchestration_artifacts.zip", answer=answer, query=query, project_root=ROOT)
     cols = st.columns(3)
     with cols[0]:
-        render_download(getattr(run, "links_report_pdf_path", None), "PDF: только ссылки", "application/pdf")
-        render_download(getattr(run, "links_report_docx_path", None), "DOCX: только ссылки", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        render_download(full_exports.get("pdf"), "PDF: local RAG полный", "application/pdf")
     with cols[1]:
-        render_download(getattr(run, "deep_report_pdf_path", None), "PDF: Deep Search", "application/pdf")
-        render_download(getattr(run, "deep_report_docx_path", None), "DOCX: Deep Search", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        render_download(full_exports.get("docx"), "DOCX: local RAG полный", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     with cols[2]:
-        render_download(getattr(run, "report_pdf_path", None), "PDF: полный отчет", "application/pdf")
-        render_download(getattr(run, "report_docx_path", None), "DOCX: полный отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        if getattr(run, "full_run_json_path", None):
-            render_download(run.full_run_json_path, "JSON: все данные", "application/json")
-    if getattr(run, "output_dir", None):
-        archive = build_run_archive(run, Path(run.output_dir) / "run_artifacts.zip")
-        render_download(archive, "ZIP: все артефакты поиска", "application/zip")
+        render_download(payload_path, "JSON: local RAG payload", "application/json")
+    render_download(archive, "ZIP: local RAG artifacts", "application/zip")
 
 
 def render_section_exports(run: Any | None, section: str, label: str) -> None:
@@ -254,6 +284,24 @@ def render_section_exports(run: Any | None, section: str, label: str) -> None:
         render_download(exports.get("pdf"), f"PDF: {label}", "application/pdf")
     with cols[1]:
         render_download(exports.get("docx"), f"DOCX: {label}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+def render_orchestration_section_exports(record: dict[str, Any], section: str, label: str) -> None:
+    orchestration = record.get("orchestration")
+    if orchestration is None:
+        return
+    exports = build_orchestration_exports(
+        orchestration,
+        section,
+        orchestration_output_dir(record) / "section_reports",
+        answer=record.get("answer"),
+        query=record.get("query"),
+    )
+    cols = st.columns(2)
+    with cols[0]:
+        render_download(exports.get("pdf"), f"PDF: RAG {label}", "application/pdf")
+    with cols[1]:
+        render_download(exports.get("docx"), f"DOCX: RAG {label}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 def render_result(record: dict[str, Any]) -> None:
@@ -288,6 +336,7 @@ def render_result(record: dict[str, Any]) -> None:
 
     with tabs[1]:
         render_section_exports(run, "sources", "источники")
+        render_orchestration_section_exports(record, "sources", "источники")
         st.markdown("**Web-search**")
         render_table(source_rows(run), empty_text="Web-источники не найдены.")
         st.markdown("**Локальный поиск**")
@@ -298,6 +347,7 @@ def render_result(record: dict[str, Any]) -> None:
 
     with tabs[2]:
         render_section_exports(run, "comparison", "сравнение")
+        render_orchestration_section_exports(record, "comparison", "сравнение")
         st.markdown("**Подтверждается локально и во внешней литературе**")
         render_table(comparison_rows(run, "confirmed_methods"))
         st.markdown("**Только локально**")
@@ -309,6 +359,7 @@ def render_result(record: dict[str, Any]) -> None:
 
     with tabs[3]:
         render_section_exports(run, "evidence", "evidence")
+        render_orchestration_section_exports(record, "evidence", "evidence")
         if orchestration is None:
             st.info("Local RAG evidence появится для режимов методик/свойств или при генерации ответа.")
         else:
@@ -333,6 +384,7 @@ def render_result(record: dict[str, Any]) -> None:
 
     with tabs[5]:
         render_section_exports(run, "charts", "графики")
+        render_orchestration_section_exports(record, "charts", "графики")
         years = table_df(year_counts(run)) if run is not None else pd.DataFrame()
         sources = table_df(source_counts(run)) if run is not None else pd.DataFrame()
         if not years.empty:
@@ -345,7 +397,7 @@ def render_result(record: dict[str, Any]) -> None:
             st.info("Нет данных по базам данных.")
 
     with tabs[6]:
-        render_reports(run)
+        render_reports(record)
 
 
 def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
