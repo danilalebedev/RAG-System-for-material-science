@@ -33,6 +33,7 @@ from app.query.cockpit import (  # noqa: E402
 )
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.local_orchestrator import run_local_knowledge  # noqa: E402
+from app.query.orchestrator import run_query_orchestration  # noqa: E402
 from app.query.planner import plan_query  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
@@ -104,6 +105,46 @@ def render_query_intelligence_plan(plan: dict[str, Any]) -> None:
         st.warning(plan.get("clarifying_question") or "Clarification is needed.")
     with st.expander("Query Intelligence JSON", expanded=False):
         st.json(plan)
+
+
+def render_route_orchestration_result(result: Any) -> None:
+    payload = result.as_dict() if hasattr(result, "as_dict") else dict(result or {})
+    plan = payload.get("plan") or payload.get("query_plan") or {}
+    context = payload.get("retrieved_context") or {}
+    evidence = payload.get("evidence") or []
+    fallbacks = payload.get("fallbacks") or []
+
+    st.subheader("Route Orchestration")
+    render_query_intelligence_plan(plan)
+
+    source_rows = [
+        {"source": source, "items": len(rows or []), "used": bool(rows)}
+        for source, rows in context.items()
+    ]
+    st.write("Sources actually used")
+    render_table(source_rows, empty_text="No retrieval sources were used.")
+
+    if payload.get("answer_draft"):
+        st.text_area("Answer draft", value=payload["answer_draft"], height=150)
+
+    tabs = st.tabs(["Evidence", "Raw", "Summaries", "Tables", "Graph", "Web", "Fallbacks"])
+    with tabs[0]:
+        render_table(evidence, empty_text="No evidence collected.")
+    with tabs[1]:
+        render_table(context.get("raw") or [], empty_text="No raw evidence.")
+    with tabs[2]:
+        render_table(context.get("summaries") or [], empty_text="No summary evidence.")
+    with tabs[3]:
+        render_table(context.get("tables") or [], empty_text="No table evidence.")
+    with tabs[4]:
+        render_table(context.get("graph") or [], empty_text="No graph evidence.")
+    with tabs[5]:
+        render_table(context.get("web") or [], empty_text="No web evidence.")
+    with tabs[6]:
+        if fallbacks:
+            render_table(fallbacks)
+        else:
+            st.success("No route fallbacks.")
 
 
 def render_local_knowledge_bundle(bundle: Any) -> None:
@@ -564,14 +605,20 @@ def render_run(run: Any) -> None:
             render_table(run.comparison.rows)
 
     with tabs[5]:
-        if st.button("Run local orchestrator", key=f"local_orchestrator_{str(run.output_dir or run.request.query)[-80:]}"):
-            with st.spinner("Running local raw/summary/table/graph search..."):
-                st.session_state["last_local_knowledge"] = run_local_knowledge(run.request.query)
-        local_bundle = st.session_state.get("last_local_knowledge")
-        if local_bundle:
-            render_local_knowledge_bundle(local_bundle)
+        if st.button("Run route orchestrator", key=f"route_orchestrator_{str(run.output_dir or run.request.query)[-80:]}"):
+            with st.spinner("Running planned retrieval routes..."):
+                st.session_state["last_route_orchestration"] = run_query_orchestration(
+                    run.request.query,
+                    include_web=bool(run.request.sources),
+                    web_sources=run.request.sources,
+                    web_top_k=min(run.request.top_k, 10),
+                    generate_pdf_report=False,
+                )
+        route_result = st.session_state.get("last_route_orchestration")
+        if route_result:
+            render_route_orchestration_result(route_result)
         else:
-            st.info("Run local orchestrator to combine raw chunks, summaries, tables and graph evidence for this query.")
+            st.info("Run route orchestrator to execute the planned raw, summary, table, graph and web routes.")
 
     with tabs[6]:
         render_knowledge_graph_tab(run.request.query)
@@ -793,9 +840,15 @@ def main() -> None:
         if not rd_question:
             st.warning("Enter an R&D question before local search.")
         else:
-            with st.spinner("Running local raw/summary/table/graph search..."):
-                st.session_state["last_local_knowledge"] = run_local_knowledge(rd_question)
-            render_local_knowledge_bundle(st.session_state["last_local_knowledge"])
+            with st.spinner("Running planned retrieval routes..."):
+                st.session_state["last_route_orchestration"] = run_query_orchestration(
+                    rd_question,
+                    include_web=web_search,
+                    web_sources=source_options,
+                    web_top_k=min(top_k, 10),
+                    generate_pdf_report=False,
+                )
+            render_route_orchestration_result(st.session_state["last_route_orchestration"])
             local_rendered = True
 
     query = None if run_local_from_cockpit else st.chat_input("Спросите про материал, процесс, режим или свойство")

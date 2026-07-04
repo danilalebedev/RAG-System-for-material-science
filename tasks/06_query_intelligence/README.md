@@ -19,6 +19,35 @@ Date: 2026-07-04
 - Updated web/local query paths to preserve the new query plan JSON in run payloads.
 - Added focused planner tests in `tests/test_query_planner.py`.
 
+## Route orchestration update
+
+- `app/query/orchestrator.py` now executes retrieval route-by-route from `QueryPlan.routes`.
+- Structured result shape:
+
+```json
+{
+  "plan": {},
+  "retrieved_context": {
+    "raw": [],
+    "summaries": [],
+    "tables": [],
+    "graph": [],
+    "web": []
+  },
+  "evidence": [],
+  "answer_draft": ""
+}
+```
+
+- Extra `fallbacks` are included so the GUI can explain unavailable routes.
+- Route behavior:
+  - `raw_rag` / `internal_rag`: reads parsed chunks when `data/parsed/chunks.jsonl` is available.
+  - `summary_rag` / `internal_rag`: uses local summary JSONL files when `data/processed/publications` summaries are available.
+  - `table_search`: uses existing CSV/table search.
+  - `graph_search`: uses existing graph artifacts.
+  - `web_search`: runs only when the caller enables web retrieval.
+- GUI now shows query plan, actually used sources, evidence/citations, answer draft, and fallbacks.
+
 ## Commands
 
 Plan only:
@@ -63,7 +92,7 @@ Results:
 - English `plan_query.py` example: passed and produced required JSON.
 - Russian `plan_query.py` example: command completed; current PowerShell/tool output displays mojibake for Cyrillic argv, while Python source/tests with Cyrillic literals work.
 - Local orchestrator smoke without data scans: passed and preserved the new query plan JSON.
-- `pytest`: `35 passed, 2 warnings`.
+- `pytest`: `36 passed, 2 warnings`.
 - `git diff --check`: passed; Git reported only CRLF normalization warnings for edited text files.
 
 ## Notes

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.query.orchestrator import run_query_orchestration
 from app.query.planner import plan_query
 
 
@@ -55,3 +56,14 @@ def test_query_plan_json_has_required_stable_keys() -> None:
     assert set(payload["rewritten_queries"]) == {"raw_rag", "summary_rag", "graph", "tables", "web"}
     assert payload["needs_clarification"] is False
     assert payload["clarifying_question"] is None
+
+
+def test_orchestrator_returns_structured_result_with_fallbacks(tmp_path) -> None:
+    result = run_query_orchestration("compare nickel leaching at 80 C", project_root=tmp_path, include_web=False)
+    payload = result.as_dict()
+    assert set(payload) == {"plan", "retrieved_context", "evidence", "answer_draft", "fallbacks"}
+    assert set(payload["retrieved_context"]) == {"raw", "summaries", "tables", "graph", "web"}
+    assert payload["plan"]["intent"] == "compare_methods"
+    assert isinstance(payload["evidence"], list)
+    assert payload["answer_draft"]
+    assert any(item["route"] in {"raw_rag", "summary_rag"} for item in payload["fallbacks"])
