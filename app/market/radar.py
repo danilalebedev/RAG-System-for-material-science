@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import date
 from typing import Iterable
 
 from app.market.normalization import latest_rows, normalize_rows, period_sort_key
 from app.market.parsers import load_rows_for_source
-from app.market.schemas import Commodity, MarketDataRow, MarketQuery, MarketRadarResult, MarketSource, SourceStatus
+from app.market.schemas import Commodity, MarketDataRow, MarketQuery, MarketRadarResult, MarketSource, SourceCredibility, SourceStatus
 from app.market.sources import DEFAULT_COMMODITIES, select_sources
 
 
@@ -50,6 +51,26 @@ INTERNAL_TERMS_BY_COMMODITY: dict[Commodity, tuple[str, ...]] = {
 }
 
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+INTERNAL_TERMS_BY_COMMODITY = {
+    "nickel": ("никелевая руда", "никелевые сульфидные концентраты", "NPI", "кучное выщелачивание", "плавка никелевых концентратов"),
+    "copper": ("медная руда", "медно-никелевые концентраты", "штейн", "шлак"),
+    "palladium": ("МПГ", "платиновые металлы", "распределение между штейном и шлаком", "потери МПГ"),
+    "platinum": ("МПГ", "платиновые металлы", "распределение между штейном и шлаком", "потери МПГ"),
+    "aluminium": ("глинозём", "первичный алюминий", "электролиз алюминия"),
+    "alumina": ("глинозём", "первичный алюминий", "электролиз алюминия"),
+    "steel": ("сталь", "чугун", "DRI", "доменное производство"),
+}
+
+TECH_AREAS_BY_COMMODITY: dict[Commodity, tuple[str, ...]] = {
+    "nickel": ("nickel ore", "sulfide concentrates", "smelting", "leaching", "NPI", "PGM by-products"),
+    "copper": ("copper ore", "matte", "slag", "smelting", "leaching"),
+    "palladium": ("PGM by-products", "matte-slag distribution", "PGM losses"),
+    "platinum": ("PGM by-products", "matte-slag distribution", "PGM losses"),
+    "aluminium": ("alumina", "primary aluminium", "aluminium electrolysis"),
+    "alumina": ("alumina refining", "Bayer process", "primary aluminium feedstock"),
+    "steel": ("hot metal", "DRI", "blast furnace operations", "steelmaking"),
+}
 
 
 def _contains_alias(text: str, aliases: Iterable[str]) -> bool:
@@ -165,6 +186,56 @@ def _build_charts(rows: list[MarketDataRow]) -> dict[str, list[dict[str, object]
     return {"time_series": time_series, "latest_comparison": comparison}
 
 
+def _source_credibility(
+    sources: Iterable[MarketSource],
+    statuses: Iterable[SourceStatus],
+    rows: Iterable[MarketDataRow],
+) -> list[SourceCredibility]:
+    status_by_id = {status.source_id: status for status in statuses}
+    rows_by_url: dict[str, list[MarketDataRow]] = defaultdict(list)
+    for row in rows:
+        rows_by_url[row.source_url].append(row)
+
+    panel: list[SourceCredibility] = []
+    today = date.today().isoformat()
+    confidence_rank = {"high": 0, "medium": 1, "low": 2}
+    for source in sources:
+        status = status_by_id.get(source.source_id)
+        source_rows = rows_by_url.get(source.source_url, [])
+        if status and status.status == "loaded":
+            mode = "live"
+        elif status and status.status == "fallback":
+            mode = "fallback"
+        else:
+            mode = "stub"
+
+        if source_rows:
+            confidence = min((row.confidence for row in source_rows), key=confidence_rank.get)
+            date_accessed = max(row.date_accessed for row in source_rows)
+            caveat = "Demo-safe data. Verify before external claims."
+        elif mode == "stub":
+            confidence = "low"
+            date_accessed = today
+            caveat = "Planned connector metadata only; no rows loaded in this run."
+        else:
+            confidence = "medium"
+            date_accessed = today
+            caveat = "Demo-safe fallback source selected; no matching rows for current filters."
+
+        panel.append(
+            SourceCredibility(
+                source_name=source.source_name,
+                source_url=source.source_url,
+                source_type=source.source_type,
+                mode=mode,
+                date_accessed=date_accessed,
+                confidence=confidence,
+                caveat=caveat,
+            )
+        )
+    return panel
+
+
 def _summary(rows: list[MarketDataRow], detected: MarketQuery) -> str:
     if not rows:
         return "Данных по запросу в доступных источниках Market Radar не найдено. Проверьте выбранные компании, страны или период."
@@ -206,7 +277,7 @@ def _suggested_sources(detected: MarketQuery, rows: list[MarketDataRow]) -> list
 
 
 def _internal_terms(detected: MarketQuery) -> list[str]:
-    if not detected.link_internal_terms and not any(item in detected.commodities for item in ("nickel", "copper", "palladium", "platinum")):
+    if not detected.link_internal_terms and not detected.commodities:
         return []
     terms: list[str] = []
     for commodity in detected.commodities:
@@ -214,6 +285,38 @@ def _internal_terms(detected: MarketQuery) -> list[str]:
             if term not in terms:
                 terms.append(term)
     return terms
+
+
+def _business_implications(rows: list[MarketDataRow], detected: MarketQuery) -> list[str]:
+    if not rows:
+        return [
+            "No matching production rows were found; use the public sources registry to decide which connector or report should be checked next.",
+            "Numbers are extracted from structured rows; LLM is not used for numeric facts.",
+        ]
+
+    entities = sorted({row.company_or_country for row in rows})
+    commodities = sorted({row.commodity for row in rows})
+    implications = [
+        "Numbers are extracted from structured rows; LLM is not used for numeric facts.",
+        "Relevant market scope: " + ", ".join(entities[:6]) + " / " + ", ".join(commodities),
+    ]
+    for commodity in commodities:
+        areas = TECH_AREAS_BY_COMMODITY.get(commodity, ())
+        if areas:
+            implications.append(
+                f"{commodity} matters for metals & mining R&D because production signals connect to: "
+                + ", ".join(areas)
+                + "."
+            )
+    if "Russia" in entities or "Nornickel" in entities:
+        implications.append(
+            "For Russia/Nornickel nickel cases, connect market context to nickel ore, sulfide concentrates, smelting, leaching, NPI and PGM by-products."
+        )
+    if detected.countries:
+        implications.append("Country-level rows are useful for supply risk, benchmark positioning and prioritizing technology scouting.")
+    if detected.companies:
+        implications.append("Company-level rows are useful for linking production exposure to process know-how and internal engineering evidence.")
+    return implications
 
 
 def run_market_radar(query: str, *, demo_mode: bool = True) -> MarketRadarResult:
@@ -233,6 +336,8 @@ def run_market_radar(query: str, *, demo_mode: bool = True) -> MarketRadarResult
         production_rows=matched_rows,
         market_summary=_summary(matched_rows, detected),
         source_status=source_status,
+        source_credibility=_source_credibility(selected_sources, source_status, matched_rows),
+        business_implications=_business_implications(matched_rows, detected),
         missing_data=_missing_data(matched_rows, detected, source_status),
         warnings=warnings,
         suggested_sources=_suggested_sources(detected, matched_rows),

@@ -20,6 +20,14 @@ Commodity = Literal[
 Metric = Literal["production", "sales", "guidance", "capacity", "reserves", "resources"]
 Confidence = Literal["high", "medium", "low"]
 SourceStatusValue = Literal["loaded", "unavailable", "fallback"]
+MarketSourceType = Literal[
+    "official_statistics",
+    "company_report",
+    "industry_association",
+    "demo_fixture",
+    "planned_connector",
+]
+SourceMode = Literal["live", "fallback", "stub"]
 
 
 class MarketDataRow(BaseModel):
@@ -41,7 +49,7 @@ class MarketSource(BaseModel):
     source_id: str
     source_name: str
     source_url: str
-    source_type: Literal["official_statistics", "industry_association", "company", "geological_survey"]
+    source_type: MarketSourceType
     commodities: list[Commodity] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     reliability_rank: int = 50
@@ -54,6 +62,16 @@ class SourceStatus(BaseModel):
     status: SourceStatusValue
     rows_loaded: int = 0
     message: str = ""
+
+
+class SourceCredibility(BaseModel):
+    source_name: str
+    source_url: str
+    source_type: MarketSourceType
+    mode: SourceMode
+    date_accessed: str
+    confidence: Confidence
+    caveat: str = ""
 
 
 class MarketQuery(BaseModel):
@@ -74,6 +92,8 @@ class MarketRadarResult(BaseModel):
     production_rows: list[MarketDataRow] = Field(default_factory=list)
     market_summary: str = ""
     source_status: list[SourceStatus] = Field(default_factory=list)
+    source_credibility: list[SourceCredibility] = Field(default_factory=list)
+    business_implications: list[str] = Field(default_factory=list)
     missing_data: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     suggested_sources: list[str] = Field(default_factory=list)

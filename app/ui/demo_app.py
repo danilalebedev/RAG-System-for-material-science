@@ -404,10 +404,18 @@ def render_market_radar_result(result: Any) -> None:
     payload = result.as_dict() if hasattr(result, "as_dict") else dict(result or {})
     rows = payload.get("production_rows") or []
     statuses = payload.get("source_status") or []
+    credibility = payload.get("source_credibility") or []
     charts = payload.get("charts") or {}
 
     st.markdown('<div class="section-label">Executive summary</div>', unsafe_allow_html=True)
     st.write(payload.get("market_summary") or "Market summary is not available.")
+    st.caption("Demo-safe data. Verify before external claims. Numbers are extracted from structured rows; LLM is not used for numeric facts.")
+
+    implications = payload.get("business_implications") or []
+    if implications:
+        st.markdown('<div class="section-label">Business implications</div>', unsafe_allow_html=True)
+        for item in implications:
+            st.write(f"- {item}")
 
     latest_rows = charts.get("latest_comparison") or []
     if latest_rows:
@@ -421,7 +429,10 @@ def render_market_radar_result(result: Any) -> None:
                     delta=str(row.get("period") or ""),
                 )
 
-    tabs = st.tabs(["Production table", "Time series", "Comparison", "Source status", "Caveats", "Internal links", "JSON"])
+    st.markdown('<div class="section-label">Source credibility</div>', unsafe_allow_html=True)
+    render_table(credibility, empty_text="Source credibility panel is not available for this run.")
+
+    tabs = st.tabs(["Production table", "Time series", "Comparison", "Source status", "Caveats", "Related R&D topics", "JSON"])
     with tabs[0]:
         render_table(rows, empty_text="Production rows не найдены для выбранных фильтров.")
     with tabs[1]:
@@ -450,6 +461,7 @@ def render_market_radar_result(result: Any) -> None:
         terms = payload.get("internal_knowledge_terms") or []
         if terms:
             render_chip_row([_chip("internal term", term, "route") for term in terms])
+            st.button("Search internal R&D knowledge", disabled=True, help="Placeholder for a later Local Knowledge integration.")
             st.caption("Эти термины можно отправить в Local Knowledge / Graph для связки рынка с внутренними документами.")
         else:
             st.info("Связанные внутренние термины появятся для Ni/Cu/PGM или запросов со словом «свяжи».")
@@ -473,6 +485,7 @@ def render_market_chart(chart_df: pd.DataFrame, *, chart_type: str, empty_messag
 
 
 def render_market_radar_panel(*, safe_demo_mode: bool) -> None:
+    st.caption("Public sources registry. Demo-safe data. Verify before external claims.")
     st.subheader("Market Radar / Рыночная разведка")
     st.caption("Официальные и demo-safe production данные: компании, страны, commodities, периоды, источники и caveats.")
     render_prompt_buttons(MARKET_DEMO_PROMPTS, target_key="market_query", prefix="market")
@@ -486,6 +499,7 @@ def render_market_radar_panel(*, safe_demo_mode: bool) -> None:
     with col_run:
         run_market = st.button("Run Market Radar", type="primary", key="run_market_radar", use_container_width=True)
     with col_note:
+        st.caption("Numbers are extracted from structured rows; LLM is not used for numeric facts.")
         st.caption("Числа берутся из структурированных строк источников/fixtures; LLM не используется для numeric facts.")
 
     if run_market:

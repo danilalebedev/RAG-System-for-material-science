@@ -142,3 +142,70 @@ def test_run_production_radar_wrapper_outputs_dashboard_rows() -> None:
     assert payload["dashboard_rows"]
     assert payload["dashboard_rows"][0]["commodity"] == "nickel"
     assert "producer_or_country" in payload["dashboard_rows"][0]
+
+
+def test_source_credibility_panel_data_exists() -> None:
+    result = run_market_radar("How much nickel did Nornickel produce?")
+
+    assert result.source_credibility
+    first = result.source_credibility[0]
+    assert first.source_name
+    assert first.source_url
+    assert first.source_type in {
+        "official_statistics",
+        "company_report",
+        "industry_association",
+        "demo_fixture",
+        "planned_connector",
+    }
+    assert first.mode in {"live", "fallback", "stub"}
+    assert first.date_accessed
+    assert first.confidence in {"high", "medium", "low"}
+    assert first.caveat
+
+
+def test_business_implications_for_nickel_russia_and_nornickel() -> None:
+    russia = run_market_radar("Show Russia nickel production")
+    nornickel = run_market_radar("How much nickel did Nornickel produce?")
+    text = " ".join(russia.business_implications + nornickel.business_implications).lower()
+
+    assert "nickel ore" in text
+    assert "sulfide concentrates" in text
+    assert "smelting" in text
+    assert "leaching" in text
+    assert "npi" in text
+    assert "pgm by-products" in text
+
+
+def test_related_internal_terms_for_core_commodities() -> None:
+    expectations = {
+        "nickel": ["никелевая руда", "никелевые сульфидные концентраты", "NPI"],
+        "copper": ["медная руда", "медно-никелевые концентраты", "штейн", "шлак"],
+        "palladium platinum": ["МПГ", "платиновые металлы", "потери МПГ"],
+        "aluminium": ["глинозём", "первичный алюминий", "электролиз алюминия"],
+        "steel": ["сталь", "чугун", "DRI", "доменное производство"],
+    }
+
+    for query, expected_terms in expectations.items():
+        result = run_market_radar(query)
+        for term in expected_terms:
+            assert term in result.internal_knowledge_terms
+
+
+def test_market_radar_handles_empty_production_rows() -> None:
+    result = run_market_radar("zirconium 1999")
+
+    assert result.production_rows == []
+    assert result.source_credibility
+    assert result.business_implications
+    assert result.charts["time_series"] == []
+    assert result.charts["latest_comparison"] == []
+
+
+def test_market_radar_handles_stub_sources_without_live_fetch() -> None:
+    result = run_market_radar("How much nickel did Nornickel produce?", demo_mode=False)
+
+    assert result.production_rows == []
+    assert result.source_credibility
+    assert all(item.mode == "stub" for item in result.source_credibility)
+    assert result.business_implications

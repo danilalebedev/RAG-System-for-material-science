@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from typing import Any
+
 from app.market.schemas import MarketDataRow, MarketSource, SourceStatus
 
 
@@ -23,6 +25,18 @@ LIVE_PARSER_PLACEHOLDERS: dict[str, str] = {
 
 def live_parser_placeholder(source_id: str) -> str | None:
     return LIVE_PARSER_PLACEHOLDERS.get(source_id)
+
+
+def connector_metadata(source: MarketSource) -> dict[str, Any]:
+    return {
+        "source_id": source.source_id,
+        "source_name": source.source_name,
+        "source_url": source.source_url,
+        "source_type": source.source_type,
+        "connector_mode": "planned/live-experimental",
+        "parser": live_parser_placeholder(source.source_id),
+        "caveat": "Live connector interface is documented; demo-safe fixtures remain the default to avoid brittle scraping.",
+    }
 
 
 def parse_live_source_placeholder(source: MarketSource) -> list[MarketDataRow]:
@@ -70,7 +84,11 @@ def load_rows_for_source(source: MarketSource, *, demo_mode: bool = True) -> tup
             message="Live source fetch is intentionally disabled in this demo-safe build.",
         )
 
-    rows = [row for row in fixture_rows() if row.source_name == source.source_name]
+    rows = [
+        row.model_copy(update={"source_name": source.source_name})
+        for row in fixture_rows()
+        if row.source_url == source.source_url or row.source_name == source.source_name
+    ]
     return rows, SourceStatus(
         source_id=source.source_id,
         source_name=source.source_name,
