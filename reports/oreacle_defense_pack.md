@@ -86,13 +86,15 @@ http://127.0.0.1:8501/
 
 Что показывать в GUI:
 
-1. `Ответ`: RouterAI answer, provider metadata, query rewrite и keywords.
+1. `Ответ`: RouterAI answer, provider metadata, RouterAI token usage/budget summary, query rewrite и keywords.
 2. `Источники`: web results с confidence, reasons, quartile и links.
 3. `Сравнение`: что подтверждается локально и внешне, что найдено только с одной стороны.
 4. `Evidence`: raw/summary/table evidence и fallbacks.
 5. `Графы`: local knowledge graph и local-vs-web method graph.
 6. `Графики`: распределение публикаций по годам и базам.
 7. `Отчеты`: скачать RouterAI answer report, links report, full report и ZIP artifacts.
+
+RouterAI budget guard: preflight и answer reports фиксируют демо-лимит 1500 RUB и фактический token usage из API metadata. Стоимость в рублях сравнивается с лимитом только если RouterAI явно вернул `cost_rub`; иначе система не показывает искусственную оценку цены.
 
 ## 5. 90-секундный сценарий видео
 

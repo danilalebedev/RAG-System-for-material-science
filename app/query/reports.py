@@ -25,6 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MOJIBAKE_MARKERS = ("Р", "С", "Ð", "Ñ", "в†", "В°", "Вµ")
 MAX_LOCAL_ARCHIVE_FILES = 20
 MAX_LOCAL_ARCHIVE_BYTES = 250 * 1024 * 1024
+DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
 
 
 def repair_mojibake(value: Any) -> str:
@@ -881,6 +882,106 @@ def answer_text(answer: Any | None, fallback: str = "") -> str:
     return compact_text(getattr(answer, "text", answer), 20_000) or fallback
 
 
+def _numeric_value(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _format_numeric(value: float | None) -> int | float | None:
+    if value is None:
+        return None
+    if float(value).is_integer():
+        return int(value)
+    return round(value, 4)
+
+
+def _usage_value(usage: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key in usage:
+            value = _numeric_value(usage.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def routerai_budget_summary(answer: Any | None, *, budget_rub: float = DEFAULT_ROUTERAI_BUDGET_RUB) -> dict[str, Any]:
+    metadata = answer_metadata(answer)
+    usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
+    prompt_tokens = _usage_value(usage, "prompt_tokens", "input_tokens", "tokens_prompt")
+    completion_tokens = _usage_value(usage, "completion_tokens", "output_tokens", "tokens_completion")
+    total_tokens = _usage_value(usage, "total_tokens", "tokens_total", "tokens")
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    reported_cost_rub = _usage_value(usage, "cost_rub", "total_cost_rub", "amount_rub", "rub")
+    reported_cost = _usage_value(usage, "cost", "total_cost", "amount")
+    currency = compact_text(usage.get("currency") or usage.get("cost_currency") or usage.get("billing_currency"), 30)
+    remaining_rub = budget_rub - reported_cost_rub if reported_cost_rub is not None else None
+
+    if reported_cost_rub is not None and remaining_rub < 0:
+        status = "budget_exceeded"
+    elif reported_cost_rub is not None:
+        status = "cost_recorded"
+    elif total_tokens is not None:
+        status = "tokens_recorded"
+    elif answer is None:
+        status = "no_answer"
+    else:
+        status = "no_usage_metadata"
+
+    note = (
+        "Фактическая стоимость в рублях не оценивалась: API не вернул cost_rub. "
+        "Контролируем token usage и общий лимит бюджета."
+        if reported_cost_rub is None
+        else "API вернул стоимость в рублях; остаток рассчитан от демо-лимита."
+    )
+    return {
+        "provider": metadata.get("provider") or "",
+        "model": metadata.get("model") or "",
+        "status": metadata.get("status") or status,
+        "budget_status": status,
+        "budget_rub": _format_numeric(float(budget_rub)),
+        "prompt_tokens": _format_numeric(prompt_tokens),
+        "completion_tokens": _format_numeric(completion_tokens),
+        "total_tokens": _format_numeric(total_tokens),
+        "reported_cost": _format_numeric(reported_cost),
+        "reported_cost_currency": currency,
+        "reported_cost_rub": _format_numeric(reported_cost_rub),
+        "remaining_budget_rub": _format_numeric(remaining_rub),
+        "usage_keys": ", ".join(sorted(str(key) for key in usage.keys())) if usage else "",
+        "note": note,
+    }
+
+
+def format_routerai_budget_summary(answer: Any | None, *, budget_rub: float = DEFAULT_ROUTERAI_BUDGET_RUB) -> list[str]:
+    summary = routerai_budget_summary(answer, budget_rub=budget_rub)
+    lines = [
+        f"- Provider/model: {summary.get('provider') or 'n/a'} / {summary.get('model') or 'n/a'}",
+        f"- Budget limit: {summary['budget_rub']} RUB",
+        f"- Token usage: prompt={summary.get('prompt_tokens') or 'n/a'}, completion={summary.get('completion_tokens') or 'n/a'}, total={summary.get('total_tokens') or 'n/a'}",
+    ]
+    if summary.get("reported_cost_rub") is not None:
+        lines.append(f"- Reported cost: {summary['reported_cost_rub']} RUB; remaining={summary.get('remaining_budget_rub')}")
+    elif summary.get("reported_cost") is not None:
+        currency = summary.get("reported_cost_currency") or "API currency"
+        lines.append(f"- Reported cost: {summary['reported_cost']} {currency}")
+    lines.append(f"- Status: {summary['budget_status']}")
+    lines.append(f"- Note: {summary['note']}")
+    return lines
+
+
 def answer_report_links(run: Any | None, *, limit: int = 25) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if run is None:
@@ -928,6 +1029,8 @@ def build_answer_report_markdown(
             lines.append(f"- {key}: {compact_text(value, 1000)}")
     else:
         lines.append("- Нет metadata.")
+
+    lines.extend(["", "## RouterAI budget / usage", *format_routerai_budget_summary(answer)])
 
     links = answer_report_links(run)
     lines.extend(["", "## Релевантные web-ссылки"])
@@ -991,6 +1094,7 @@ def build_answer_exports(
             "query": query,
             "answer": answer_text(answer),
             "metadata": answer_metadata(answer),
+            "routerai_budget": routerai_budget_summary(answer),
             "web_links": answer_report_links(run),
         },
     )

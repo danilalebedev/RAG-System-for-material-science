@@ -296,6 +296,7 @@ Streamlit-приложении.
 - Верхний блок: единый chat input. Query rewrite показывается после запуска во вкладке `Ответ` как corrected
   query и route-specific variants. Это общий первый шаг для web-search и local RAG search.
 - `Ответ`: финальный RouterAI answer, прямые PDF/DOCX/JSON выгрузки ответа, provider metadata,
+  RouterAI budget/usage summary для демо-лимита 1500 RUB,
   keywords и query rewrites.
 - `Источники`: ranked web metadata с relevance confidence/reasons, links и локальные совпадения.
 - `Сравнение`: confirmed/local-only/web-only методики, различающиеся условия и property/numeric rows.
@@ -334,6 +335,7 @@ Streamlit-приложении.
 - `executive_brief.md/.pdf/.docx` - короткий управленческий отчет;
 - `full_run.json` - полный payload для GUI/отладки, включая charts/cockpit payload;
 - `answer_report/routerai_answer.md/.pdf/.docx/.json` - финальный RouterAI ответ, metadata провайдера,
+  RouterAI token usage/budget summary,
   релевантные web-ссылки и, если есть, Deep Search summaries / local RAG evidence;
 - `web_links_manifest.json` - нормализованный manifest web-ссылок без сохранения full text,
   включая `relevance_confidence`;

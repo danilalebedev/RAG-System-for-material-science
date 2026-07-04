@@ -29,6 +29,7 @@ from app.query.reports import (  # noqa: E402
     relevance_confidence,
     result_link,
     run_overall_summary,
+    routerai_budget_summary,
     safe_report_id,
     source_counts,
     year_counts,
@@ -382,6 +383,8 @@ def render_result(record: dict[str, Any]) -> None:
             st.markdown(compact_text(getattr(answer, "text", ""), 6000))
             render_answer_section_exports(record)
             metadata = answer.metadata() if hasattr(answer, "metadata") else {}
+            st.markdown("**RouterAI budget / usage**")
+            render_table([routerai_budget_summary(answer)], empty_text="Нет RouterAI usage metadata.")
             render_table([metadata], empty_text="Нет metadata по LLM.")
         elif run is not None:
             st.write(run_overall_summary(run))

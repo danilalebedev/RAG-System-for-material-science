@@ -26,6 +26,7 @@ REQUIRED_STREAMS = (
     "document_summary_vector",
     "procedure_summary_vector",
 )
+DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
 
 
 def configure_stdio() -> None:
@@ -65,6 +66,32 @@ def check_routerai_key(root: Path) -> dict[str, Any]:
     value = os.getenv("ROUTERAI_API_KEY", "").strip()
     configured = bool(value and "YOUR_" not in value.upper())
     return {"name": "routerai_api_key", "status": "pass" if configured else "fail", "configured": configured}
+
+
+def routerai_budget_rub_from_env(root: Path) -> tuple[float, str, str | None]:
+    load_dotenv(root / ".env", override=False, encoding="utf-8-sig")
+    raw = os.getenv("ROUTERAI_BUDGET_RUB", "").strip()
+    if not raw:
+        return DEFAULT_ROUTERAI_BUDGET_RUB, "default", None
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        return DEFAULT_ROUTERAI_BUDGET_RUB, "invalid_env_defaulted", "ROUTERAI_BUDGET_RUB is not a number"
+    if value <= 0:
+        return DEFAULT_ROUTERAI_BUDGET_RUB, "invalid_env_defaulted", "ROUTERAI_BUDGET_RUB must be positive"
+    return value, "env", None
+
+
+def check_routerai_budget(root: Path) -> dict[str, Any]:
+    budget_rub, source, error = routerai_budget_rub_from_env(root)
+    return {
+        "name": "routerai_budget_guard",
+        "status": "pass" if error is None else "fail",
+        "budget_rub": budget_rub,
+        "source": source,
+        "error": error,
+        "note": "Reports show token usage and compare cost only if RouterAI API returns cost_rub metadata.",
+    }
 
 
 def check_streamlit_import() -> dict[str, Any]:
@@ -200,6 +227,7 @@ def main() -> int:
     config_path = project_path(root, args.config)
     checks: list[dict[str, Any]] = [
         check_routerai_key(root),
+        check_routerai_budget(root),
         check_streamlit_import(),
         *profile_manifest_checks(root, config_path, args.profile),
     ]

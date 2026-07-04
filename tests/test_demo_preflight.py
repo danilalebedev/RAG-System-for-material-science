@@ -55,6 +55,20 @@ def test_summarize_requires_all_checks_to_pass() -> None:
     assert demo_preflight.summarize([{"status": "pass"}, {"status": "fail"}]) == "fail"
 
 
+def test_routerai_budget_defaults_and_env_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("ROUTERAI_BUDGET_RUB", raising=False)
+    default_budget, source, error = demo_preflight.routerai_budget_rub_from_env(tmp_path)
+    assert default_budget == 1500.0
+    assert source == "default"
+    assert error is None
+
+    monkeypatch.setenv("ROUTERAI_BUDGET_RUB", "900.5")
+    env_budget, env_source, env_error = demo_preflight.routerai_budget_rub_from_env(tmp_path)
+    assert env_budget == 900.5
+    assert env_source == "env"
+    assert env_error is None
+
+
 def test_run_search_smoke_checks_required_streams(monkeypatch, tmp_path: Path) -> None:
     def fake_run(*_: object, **__: object) -> SimpleNamespace:
         streams = {stream: 1 for stream in demo_preflight.REQUIRED_STREAMS}

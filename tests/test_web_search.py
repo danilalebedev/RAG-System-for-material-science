@@ -47,6 +47,7 @@ from app.query.reports import (
     property_report_markdown,
     property_report_rows_from_run,
     relevance_confidence,
+    routerai_budget_summary,
     run_overall_summary,
 )
 from app.query.rewrite import deterministic_query_rewrite
@@ -964,7 +965,14 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     property_exports = build_section_exports(run, "properties", run_dir / "section_reports")
     assert "220 HV" in property_exports["markdown"].read_text(encoding="utf-8")
 
-    answer = LLMResponse(text="RouterAI synthesized literature answer.", provider="routerai", model="test", status="primary", used_evidence=True)
+    answer = LLMResponse(
+        text="RouterAI synthesized literature answer.",
+        provider="routerai",
+        model="test",
+        status="primary",
+        used_evidence=True,
+        usage={"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+    )
     answer_exports = build_answer_exports(run_dir / "answer_report", query="nickel alloy annealing", answer=answer, run=run)
     assert answer_exports["pdf"].exists()
     assert answer_exports["docx"].exists()
@@ -972,6 +980,11 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     answer_markdown = answer_exports["markdown"].read_text(encoding="utf-8")
     assert "RouterAI synthesized literature answer" in answer_markdown
     assert "https://example.org/paper" in answer_markdown
+    assert "RouterAI budget / usage" in answer_markdown
+    answer_json = json.loads(answer_exports["json"].read_text(encoding="utf-8"))
+    assert answer_json["routerai_budget"]["budget_rub"] == 1500
+    assert answer_json["routerai_budget"]["total_tokens"] == 150
+    assert routerai_budget_summary(answer)["budget_status"] == "tokens_recorded"
 
     archive = build_run_archive(run, run_dir / "run_artifacts.zip", project_root=tmp_path, answer=answer, query="nickel alloy annealing")
     assert archive.exists()
