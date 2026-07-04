@@ -293,8 +293,15 @@ def run_query_orchestration(
     web_sources: list[SearchSource] | None = None,
     web_top_k: int = 10,
     generate_pdf_report: bool = False,
+    required_routes: list[RouteName] | None = None,
 ) -> QueryOrchestrationResult:
     plan = plan_query(query)
+    if required_routes:
+        routes_in_order: list[RouteName] = []
+        for route in [*plan.routes, *required_routes]:
+            if route not in routes_in_order:
+                routes_in_order.append(route)
+        plan = plan.model_copy(update={"routes": routes_in_order})
     config = local_config_for_routes(plan, project_root=project_root)
     routes: set[RouteName] = set(plan.routes)
     use_internal = "internal_rag" in routes
