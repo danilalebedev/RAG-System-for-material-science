@@ -290,11 +290,13 @@ Streamlit-приложении.
 
 Основные зоны:
 
-- Sidebar: тип запроса, RAG profile, Local search, Web literature search, LLM rewrite, Deep Search limit,
-  source selection, top-k, RouterAI answer, PDF/DOCX/report options.
+- Sidebar: на первом уровне оставлены только тип запроса, Local search, Web literature search, Deep Search,
+  Deep Search limit и top-k. Технические параметры `RAG profile`, LLM rewrite, source selection,
+  RouterAI answer, PDF/DOCX/report options и safe excerpt fetching перенесены в `Advanced`.
 - Верхний блок: единый chat input. Query rewrite показывается после запуска во вкладке `Ответ` как corrected
   query и route-specific variants. Это общий первый шаг для web-search и local RAG search.
-- `Ответ`: финальный RouterAI answer, provider metadata, keywords и query rewrites.
+- `Ответ`: финальный RouterAI answer, прямые PDF/DOCX/JSON выгрузки ответа, provider metadata,
+  keywords и query rewrites.
 - `Источники`: ranked web metadata с relevance confidence/reasons, links и локальные совпадения.
 - `Сравнение`: confirmed/local-only/web-only методики, различающиеся условия и property/numeric rows.
 - `Evidence`: Raw RAG, Summary RAG, Tables и fallbacks.

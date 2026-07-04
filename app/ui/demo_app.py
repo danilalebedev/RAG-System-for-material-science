@@ -315,6 +315,26 @@ def render_reports(record: dict[str, Any]) -> None:
     render_download(archive, "ZIP: local RAG artifacts", "application/zip")
 
 
+def render_answer_section_exports(record: dict[str, Any]) -> None:
+    answer = record.get("answer")
+    if answer is None:
+        return
+    exports = build_answer_exports(
+        answer_output_dir(record),
+        query=record.get("query"),
+        answer=answer,
+        run=record.get("literature_run"),
+        orchestration=record.get("orchestration"),
+    )
+    cols = st.columns(3)
+    with cols[0]:
+        render_download(exports.get("pdf"), "PDF: ответ", "application/pdf")
+    with cols[1]:
+        render_download(exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[2]:
+        render_download(exports.get("json"), "JSON: answer", "application/json")
+
+
 def render_section_exports(run: Any | None, section: str, label: str) -> None:
     if run is None or not getattr(run, "output_dir", None):
         return
@@ -360,6 +380,7 @@ def render_result(record: dict[str, Any]) -> None:
     with tabs[0]:
         if answer is not None:
             st.markdown(compact_text(getattr(answer, "text", ""), 6000))
+            render_answer_section_exports(record)
             metadata = answer.metadata() if hasattr(answer, "metadata") else {}
             render_table([metadata], empty_text="Нет metadata по LLM.")
         elif run is not None:
@@ -502,24 +523,25 @@ def render_sidebar() -> dict[str, Any]:
     with st.sidebar:
         st.header("Настройки")
         request_type = st.radio("Тип запроса", list(REQUEST_TYPES), horizontal=False)
-        retrieval_profile = st.selectbox("RAG profile", ["routerai_bge_m3", "yandex", "default"], index=0)
         local_search = st.checkbox("Local search", value=True)
         web_search = st.checkbox("Web literature search", value=True)
-        use_llm_rewrite = st.checkbox("LLM rewrite запроса", value=True)
         deep_search = st.checkbox("Deep Search", value=False)
         deep_limit = st.slider("Статей для Deep Search", min_value=1, max_value=20, value=5)
         top_k = st.slider("Top K", min_value=3, max_value=60, value=20)
-        sources = st.multiselect(
-            "Search resources",
-            options=ALL_SEARCH_SOURCES,
-            default=DEFAULT_SEARCH_SOURCES,
-            format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
-        )
-        generate_answer = st.checkbox("Ответ через RouterAI", value=True)
-        answer_tokens = st.slider("Длина ответа", min_value=300, max_value=1800, value=900, step=100)
-        generate_pdf = st.checkbox("Генерировать PDF", value=True)
-        comparison_insights = st.checkbox("Выводы по сравнению", value=True)
-        fetch_excerpts = st.checkbox("Загружать безопасные excerpts", value=True)
+        with st.expander("Advanced", expanded=False):
+            retrieval_profile = st.selectbox("RAG profile", ["routerai_bge_m3", "yandex", "default"], index=0)
+            use_llm_rewrite = st.checkbox("LLM rewrite запроса", value=True)
+            sources = st.multiselect(
+                "Search resources",
+                options=ALL_SEARCH_SOURCES,
+                default=DEFAULT_SEARCH_SOURCES,
+                format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
+            )
+            generate_answer = st.checkbox("Ответ через RouterAI", value=True)
+            answer_tokens = st.slider("Длина ответа", min_value=300, max_value=1800, value=900, step=100)
+            generate_pdf = st.checkbox("Генерировать PDF", value=True)
+            comparison_insights = st.checkbox("Выводы по сравнению", value=True)
+            fetch_excerpts = st.checkbox("Загружать безопасные excerpts", value=True)
     return {
         "request_type": request_type,
         "retrieval_profile": None if retrieval_profile == "default" else retrieval_profile,
