@@ -10,7 +10,7 @@ from typing import Any
 
 from app.io_utils import write_jsonl
 from app.query import reports as report_builders
-from app.query.rewrite import deterministic_query_rewrite, rewrite_query
+from app.query.planner import QueryPlan, plan_query
 from app.settings import PROJECT_ROOT
 from app.web_search.clients import LiteratureSearchClient
 from app.web_search.comparison import (
@@ -23,6 +23,22 @@ from app.web_search.journal_quality import load_quartile_map
 from app.web_search.keywords import extract_keywords
 from app.web_search.resource_links import build_resource_links
 from app.web_search.schemas import LiteratureSearchRequest, LiteratureSearchRun
+
+
+def plan_keywords(plan: QueryPlan, fallback_query: str) -> list[str]:
+    entity_terms = (
+        plan.entities.materials
+        + plan.entities.processes
+        + plan.entities.equipment
+        + plan.entities.properties
+        + plan.entities.experts
+        + plan.entities.facilities
+    )
+    return list(dict.fromkeys(entity_terms + extract_keywords(fallback_query)))
+
+
+def first_variant(values: list[str], fallback: str) -> str:
+    return values[0] if values else fallback
 
 
 def utc_run_id(query: str) -> str:
@@ -102,20 +118,11 @@ def run_literature_search(
     output_root: Path | None = None,
     yandex_client: Any | None = None,
 ) -> LiteratureSearchRun:
-    rewrite_client = yandex_client if request.use_llm_query_rewrite else None
-    if request.use_llm_query_rewrite and rewrite_client is None:
-        rewrite_client = build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
-    query_plan = (
-        rewrite_query(
-            request.query,
-            client=rewrite_client,
-            materials_only=request.materials_only,
-            use_llm=request.use_llm_query_rewrite,
-        )
-        if request.use_query_rewrite
-        else deterministic_query_rewrite(request.query, materials_only=request.materials_only)
-    )
-    keywords = query_plan.all_keywords or extract_keywords(request.query)
+    query_plan = plan_query(request.query)
+    keywords = plan_keywords(query_plan, request.query)
+    local_query = first_variant(query_plan.rewritten_queries.summary_rag or query_plan.rewritten_queries.raw_rag, query_plan.original_query)
+    web_query = first_variant(query_plan.rewritten_queries.web, query_plan.original_query)
+    web_variants = query_plan.rewritten_queries.web or [web_query]
     output_root = output_root or (project_root / "data" / "processed" / "web_search")
     run_id = safe_run_id(request.run_id or utc_run_id(request.query))
     output_dir = output_root / run_id
@@ -124,7 +131,7 @@ def run_literature_search(
     local_matches = []
     if request.include_local_search:
         local_matches = search_local_summaries(
-            query=query_plan.corrected_query,
+            query=local_query,
             keywords=keywords,
             publications=local_publications,
             document_summaries=local_document_summaries,
@@ -137,18 +144,18 @@ def run_literature_search(
         journal_quartile_map=load_quartile_map(project_root / "config" / "web_search" / "journal_quartiles.json"),
     )
     results, warnings = web_client.search(
-        query_plan.corrected_query,
+        web_query,
         keywords=keywords,
         sources=request.sources,
         top_k=request.top_k,
-        query_variants=query_plan.search_queries,
+        query_variants=web_variants,
         materials_only=request.materials_only,
     )
     resource_links = []
     if request.include_recommended_resource_links:
         resource_links = build_resource_links(
-            corrected_query=query_plan.corrected_query,
-            search_queries=query_plan.search_queries,
+            corrected_query=web_query,
+            search_queries=web_variants,
             selected_resource_ids=request.recommended_resource_ids or None,
         )
 

@@ -255,6 +255,10 @@ def query_decomposition(run: Any) -> list[dict[str, Any]]:
     filters = plan.get("filters") if isinstance(plan.get("filters"), dict) else {}
     numeric_terms = extract_numeric_terms(query, filters)
     years = extract_year_terms(query, filters.get("time"), filters.get("period"), filters.get("year_from"), filters.get("year_to"))
+    rewritten = plan.get("rewritten_queries") if isinstance(plan.get("rewritten_queries"), dict) else {}
+    search_query_values = list_values(plan.get("search_queries"))
+    for route_queries in rewritten.values():
+        search_query_values.extend(list_values(route_queries))
 
     rows = [
         {
@@ -299,7 +303,7 @@ def query_decomposition(run: Any) -> list[dict[str, Any]]:
         },
         {
             "slot": "Варианты поискового запроса",
-            "values": unique_limited(list_values(plan.get("search_queries")), limit=8),
+            "values": unique_limited(search_query_values, limit=8),
             "why": "именно эти RU/EN формулировки отправляются во внешние базы",
         },
     ]
@@ -699,7 +703,7 @@ def executive_brief_markdown(run: Any) -> str:
     local_only = len(getattr(comparison, "local_only_methods", []) or []) if comparison else 0
     web_only = len(getattr(comparison, "web_only_methods", []) or []) if comparison else 0
     differing = len(getattr(comparison, "differing_conditions", []) or []) if comparison else 0
-    corrected_query = (run.query_plan or {}).get("corrected_query") or run.request.query
+    corrected_query = (run.query_plan or {}).get("original_query") or (run.query_plan or {}).get("corrected_query") or run.request.query
     top_sources = list(getattr(run, "results", []) or [])[:8]
     dashboard = local_vs_world_dashboard(run)
     cards = evidence_cards(run)

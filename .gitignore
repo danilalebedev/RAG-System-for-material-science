@@ -24,6 +24,7 @@ data/raw/
 data/interim/
 data/parsed/
 data/processed/
+data/index/
 data/indexes/
 reports/parsing/
 logs/

@@ -34,6 +34,11 @@ def result_link(result: Any) -> str:
     return ""
 
 
+def display_query(run: Any) -> str:
+    plan = getattr(run, "query_plan", {}) or {}
+    return str(plan.get("original_query") or plan.get("corrected_query") or getattr(getattr(run, "request", None), "query", ""))
+
+
 def register_pdf_font() -> str:
     candidates = [
         Path("C:/Windows/Fonts/arial.ttf"),
@@ -173,7 +178,7 @@ def build_links_report(run: Any) -> str:
         "# Отчет по релевантным ссылкам",
         "",
         f"Запрос: {run.request.query}",
-        f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}",
+        f"Переформулированный запрос: {display_query(run)}",
         "",
         "## Web-search",
     ]
@@ -229,7 +234,7 @@ def build_literature_report(run: Any) -> str:
         "# Полный отчет по поиску литературы",
         "",
         f"Запрос: {run.request.query}",
-        f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}",
+        f"Переформулированный запрос: {display_query(run)}",
         f"Ключевые слова: {', '.join(run.keywords) if run.keywords else 'n/a'}",
         f"Внешние результаты: {len(run.results)}",
         f"Локальные совпадения: {len(run.local_matches)}",
@@ -397,7 +402,7 @@ def build_pdf_report(run: Any, output_path: Path, *, mode: str = "full") -> Path
     }.get(mode, "Отчет по поиску литературы")
     story.append(paragraph(title, styles["TitleUnicode"]))
     story.append(paragraph(f"Запрос: {run.request.query}", styles["BodyUnicode"]))
-    story.append(paragraph(f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}", styles["BodyUnicode"]))
+    story.append(paragraph(f"Переформулированный запрос: {display_query(run)}", styles["BodyUnicode"]))
 
     if mode == "brief":
         brief_text = re.sub(r"^# .+\n\n?", "", cockpit.executive_brief_markdown(run), count=1)
@@ -483,7 +488,7 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
         level=1,
     )
     document.add_paragraph(f"Запрос: {run.request.query}")
-    document.add_paragraph(f"Переформулированный запрос: {run.query_plan.get('corrected_query') if run.query_plan else run.request.query}")
+    document.add_paragraph(f"Переформулированный запрос: {display_query(run)}")
 
     if mode == "brief":
         brief_text = re.sub(r"^# .+\n\n?", "", cockpit.executive_brief_markdown(run), count=1)

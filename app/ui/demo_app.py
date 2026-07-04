@@ -32,12 +32,46 @@ from app.query.cockpit import (  # noqa: E402
     query_decomposition,
 )
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
+from app.query.local_orchestrator import run_local_knowledge  # noqa: E402
+from app.query.comparison import compare_methods  # noqa: E402
+from app.query.orchestrator import run_query_orchestration  # noqa: E402
+from app.query.planner import plan_query  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
+from app.graph.search import load_graph, neighbors as graph_neighbors, paths_to_types, search_entities  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
 
 
 load_dotenv(ROOT / ".env")
+GRAPH_NODES_PATH = ROOT / "data" / "index" / "knowledge_graph_nodes.jsonl"
+GRAPH_EDGES_PATH = ROOT / "data" / "index" / "knowledge_graph_edges.jsonl"
+
+
+DEMO_PROMPTS = {
+    "quick": [
+        "Сравни методы переработки литий-ионных батарей для извлечения никеля и кобальта",
+        "Найди технологии удаления SO2 в металлургии",
+        "Покажи связи никель → процессы → свойства",
+        "Найди таблицы с Ni/Cu/Co",
+    ],
+    "compare": [
+        "Сравни методы переработки литий-ионных батарей для извлечения никеля и кобальта",
+        "Сравни методы удаления SO2 в металлургии",
+        "Сравни гидрометаллургию и пирометаллургию для извлечения Co",
+    ],
+    "tables": [
+        "Найди численные параметры извлечения Ni/Cu/Co",
+        "Покажи температуры и проценты кислот для выщелачивания никеля",
+    ],
+    "graph": [
+        "Покажи связи никель → процессы → свойства",
+        "Какие процессы связаны с извлечением кобальта",
+    ],
+    "web_local": [
+        "Сравни внутреннюю базу и свежие публикации по recycling LIB",
+        "Найди свежие публикации про извлечение никеля из хвостов",
+    ],
+}
 
 
 def display_value(value: Any, *, max_chars: int = 900) -> Any:
@@ -64,6 +98,341 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
         st.info(empty_text)
         return
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
+
+
+def render_cockpit_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 1.6rem; padding-bottom: 2.4rem;}
+        .rd-hero {
+            border: 1px solid rgba(25, 35, 55, 0.12);
+            border-radius: 8px;
+            padding: 26px 28px;
+            margin-bottom: 18px;
+            background: linear-gradient(135deg, #f8fafc 0%, #eef7f4 52%, #f7f3ea 100%);
+        }
+        .rd-hero h1 {
+            margin: 0 0 8px 0;
+            font-size: 2.35rem;
+            line-height: 1.05;
+            letter-spacing: 0;
+            color: #14213d;
+        }
+        .rd-hero p {
+            margin: 0;
+            max-width: 980px;
+            color: #405066;
+            font-size: 1.02rem;
+            line-height: 1.55;
+        }
+        .rd-card {
+            border: 1px solid rgba(30, 42, 62, 0.12);
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 16px 16px 14px 16px;
+            min-height: 106px;
+            box-shadow: 0 1px 2px rgba(20, 33, 61, 0.04);
+        }
+        .rd-card strong {color: #172033; font-size: 1.02rem;}
+        .rd-card span {display: block; color: #5a687b; margin-top: 7px; line-height: 1.38;}
+        .chip-row {display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 12px 0;}
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            border: 1px solid rgba(20, 33, 61, 0.14);
+            background: #f8fafc;
+            color: #1f2a3d;
+            padding: 4px 10px;
+            font-size: 0.82rem;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+        .chip.route {background: #eef7f4;}
+        .chip.intent {background: #fff7e6;}
+        .section-label {
+            color: #536276;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            font-size: .72rem;
+            font-weight: 700;
+            margin: 20px 0 6px 0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_hero() -> None:
+    st.markdown(
+        """
+        <div class="rd-hero">
+          <h1>R&amp;D Knowledge Cockpit</h1>
+          <p>Поиск, сравнение и объяснение технических решений по внутренней базе, таблицам, графу знаний и внешним публикациям.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _chip(label: str, value: Any, css_class: str = "") -> str:
+    text = display_value(value, max_chars=120)
+    if not text:
+        return ""
+    return f'<span class="chip {css_class}">{label}: {text}</span>'
+
+
+def render_chip_row(chips: list[str]) -> None:
+    html = "".join(chip for chip in chips if chip)
+    if html:
+        st.markdown(f'<div class="chip-row">{html}</div>', unsafe_allow_html=True)
+
+
+def render_mode_cards() -> None:
+    cards = [
+        ("Быстрый поиск", "Найти документы, факты и источники по внутренней базе и web."),
+        ("Сравнение методик", "Собрать таблицу методов, условий, чисел, плюсов и ограничений."),
+        ("Табличные данные", "Вытащить параметры, проценты, температуры и составы из CSV/Excel."),
+        ("Граф знаний", "Показать связи Materials / Processes / Properties / Publications."),
+        ("Внутреннее vs внешнее", "Сопоставить локальные данные с открытыми публикациями."),
+    ]
+    columns = st.columns(len(cards))
+    for column, (title, text) in zip(columns, cards):
+        column.markdown(f'<div class="rd-card"><strong>{title}</strong><span>{text}</span></div>', unsafe_allow_html=True)
+
+
+def set_prompt(target_key: str, prompt: str) -> None:
+    st.session_state[target_key] = prompt
+
+
+def render_prompt_buttons(prompts: list[str], *, target_key: str, prefix: str) -> None:
+    st.caption("Demo prompts")
+    columns = st.columns(min(4, len(prompts)))
+    for index, prompt in enumerate(prompts):
+        columns[index % len(columns)].button(
+            prompt,
+            key=f"{prefix}_prompt_{index}",
+            on_click=set_prompt,
+            args=(target_key, prompt),
+            use_container_width=True,
+        )
+
+
+def render_empty_state() -> None:
+    st.info(
+        "Выберите demo prompt или задайте вопрос: cockpit построит QueryPlan, запустит нужные retrievers, покажет источники, evidence и fallbacks."
+    )
+    render_prompt_buttons(DEMO_PROMPTS["quick"], target_key="rd_question", prefix="empty")
+
+
+def query_plan_search_queries(plan: dict[str, Any]) -> list[str]:
+    rewritten = plan.get("rewritten_queries") if isinstance(plan.get("rewritten_queries"), dict) else {}
+    values: list[str] = []
+    for key in ("raw_rag", "summary_rag", "graph", "tables", "web"):
+        for item in rewritten.get(key) or []:
+            if item and item not in values:
+                values.append(str(item))
+    for item in plan.get("search_queries") or []:
+        if item and item not in values:
+            values.append(str(item))
+    return values
+
+
+def query_plan_display_query(plan: dict[str, Any], fallback: str) -> str:
+    return str(plan.get("original_query") or plan.get("corrected_query") or fallback)
+
+
+def render_query_intelligence_plan(plan: dict[str, Any]) -> None:
+    if not plan:
+        st.info("No query plan available.")
+        return
+    st.markdown('<div class="section-label">Query Intelligence</div>', unsafe_allow_html=True)
+    entities = plan.get("entities") if isinstance(plan.get("entities"), dict) else {}
+    entity_values: list[str] = []
+    for values in entities.values():
+        entity_values.extend(values or [])
+    render_chip_row(
+        [
+            _chip("intent", plan.get("intent") or "n/a", "intent"),
+            _chip("domain", plan.get("domain") or "n/a"),
+            _chip("answer", plan.get("answer_format") or "n/a"),
+            _chip("entities", ", ".join(entity_values[:8]) or "none"),
+            *[_chip("route", route, "route") for route in plan.get("routes") or []],
+        ]
+    )
+    if plan.get("needs_clarification"):
+        st.warning(plan.get("clarifying_question") or "Clarification is needed.")
+    with st.expander("Query Intelligence JSON", expanded=False):
+        st.json(plan)
+
+
+def render_route_orchestration_result(result: Any) -> None:
+    payload = result.as_dict() if hasattr(result, "as_dict") else dict(result or {})
+    plan = payload.get("plan") or payload.get("query_plan") or {}
+    context = payload.get("retrieved_context") or {}
+    evidence = payload.get("evidence") or []
+    fallbacks = payload.get("fallbacks") or []
+
+    st.subheader("Route Orchestration")
+    render_query_intelligence_plan(plan)
+
+    source_rows = [
+        {"source": source, "items": len(rows or []), "used": bool(rows)}
+        for source, rows in context.items()
+    ]
+    st.write("Sources actually used")
+    render_table(source_rows, empty_text="No retrieval sources were used.")
+
+    if payload.get("answer_draft"):
+        st.text_area("Answer draft", value=payload["answer_draft"], height=150)
+
+    tabs = st.tabs(["Evidence", "Raw", "Summaries", "Tables", "Graph", "Web", "Fallbacks"])
+    with tabs[0]:
+        render_table(evidence, empty_text="No evidence collected.")
+    with tabs[1]:
+        render_table(context.get("raw") or [], empty_text="No raw evidence.")
+    with tabs[2]:
+        render_table(context.get("summaries") or [], empty_text="No summary evidence.")
+    with tabs[3]:
+        render_table(context.get("tables") or [], empty_text="No table evidence.")
+    with tabs[4]:
+        render_table(context.get("graph") or [], empty_text="No graph evidence.")
+    with tabs[5]:
+        render_table(context.get("web") or [], empty_text="No web evidence.")
+    with tabs[6]:
+        if fallbacks:
+            render_table(fallbacks)
+        else:
+            st.success("No route fallbacks.")
+
+
+def render_comparison_mode_result(result: Any) -> None:
+    payload = result.as_dict() if hasattr(result, "as_dict") else dict(result or {})
+    rows = payload.get("rows") or []
+    plan = payload.get("plan") or {}
+    context = payload.get("retrieved_context") or {}
+    missing = payload.get("missing_evidence") or []
+
+    st.markdown('<div class="section-label">Executive summary</div>', unsafe_allow_html=True)
+    st.write(payload.get("answer_summary") or "No summary was produced.")
+
+    render_query_intelligence_plan(plan)
+
+    st.markdown('<div class="section-label">Sources actually used</div>', unsafe_allow_html=True)
+    render_table(
+        [{"source": source, "items": len(items or []), "used": bool(items)} for source, items in context.items()],
+        empty_text="No sources were used.",
+    )
+
+    st.markdown('<div class="section-label">Comparison table</div>', unsafe_allow_html=True)
+    table_rows = [
+        {
+            "Method": row.get("item"),
+            "Description": row.get("description"),
+            "Materials": row.get("materials"),
+            "Processes": row.get("processes"),
+            "Conditions": row.get("conditions"),
+            "Properties": row.get("properties"),
+            "Numeric values": row.get("numeric_values"),
+            "Advantages": row.get("advantages"),
+            "Limitations": row.get("limitations"),
+        }
+        for row in rows
+    ]
+    render_table(table_rows, empty_text="No comparison rows were generated.")
+
+    st.markdown('<div class="section-label">Evidence & sources</div>', unsafe_allow_html=True)
+    for index, row in enumerate(rows, start=1):
+        with st.expander(f"{index}. {row.get('item') or 'Method'} evidence", expanded=index == 1):
+            render_table(row.get("evidence") or [], empty_text="No direct evidence for this row.")
+
+    st.markdown('<div class="section-label">Missing evidence / fallbacks</div>', unsafe_allow_html=True)
+    if missing:
+        render_table(missing)
+    else:
+        st.success("No missing evidence detected.")
+
+    graph_context = context.get("graph") or []
+    if graph_context:
+        st.markdown('<div class="section-label">Graph context</div>', unsafe_allow_html=True)
+        render_table(graph_context[:20])
+
+    with st.expander("Full structured comparison JSON", expanded=False):
+        st.json(payload)
+
+
+def render_comparison_mode_panel(*, include_web: bool, source_options: list[str], top_k: int) -> None:
+    render_prompt_buttons(DEMO_PROMPTS["compare"], target_key="comparison_query", prefix="compare")
+    query = st.text_area(
+        "Что сравнить?",
+        key="comparison_query",
+        height=90,
+        placeholder="Сравни методы переработки литий-ионных батарей для извлечения никеля и кобальта",
+    )
+    col_run, col_web = st.columns([1, 3])
+    with col_web:
+        comparison_include_web = st.checkbox("Include web search", value=include_web, key="comparison_include_web")
+    with col_run:
+        run_comparison = st.button("Run comparison", type="primary", key="run_comparison_mode", use_container_width=True)
+    if run_comparison:
+        if not query:
+            st.warning("Введите запрос для сравнения методик.")
+            return
+        with st.spinner("Building deterministic comparison table..."):
+            st.session_state["last_comparison_result"] = compare_methods(
+                query,
+                include_web=comparison_include_web,
+                web_sources=source_options,
+                top_k=min(top_k, 10),
+            )
+    if st.session_state.get("last_comparison_result"):
+        render_comparison_mode_result(st.session_state["last_comparison_result"])
+    else:
+        st.info("Comparison Mode соберет методы, условия, численные параметры, ограничения и evidence из доступных retrievers.")
+
+
+def render_local_knowledge_bundle(bundle: Any) -> None:
+    st.subheader("Local Knowledge")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Raw chunks", len(bundle.raw_chunks))
+    col2.metric("Summaries", len(bundle.summary_hits))
+    col3.metric("Tables", len(bundle.table_hits))
+    col4.metric("Graph entities", len(bundle.graph_hits))
+    st.markdown(bundle.brief)
+    if bundle.warnings:
+        render_warnings(bundle.warnings)
+
+    tabs = st.tabs(["Raw", "Summaries", "Tables", "Graph", "Context", "Query Plan"])
+    with tabs[0]:
+        render_table(
+            [
+                {
+                    "rank": item.rank,
+                    "score": item.score,
+                    "doc_id": item.doc_id,
+                    "chunk_id": item.chunk_id,
+                    "source_path": item.source_path,
+                    "text": item.text[:900],
+                }
+                for item in bundle.raw_chunks
+            ],
+            empty_text="No raw chunks found.",
+        )
+    with tabs[1]:
+        render_table([item.as_dict() for item in bundle.summary_hits], empty_text="No summary hits found.")
+    with tabs[2]:
+        render_table([item.as_dict() for item in bundle.table_hits], empty_text="No table hits found.")
+    with tabs[3]:
+        render_table(bundle.graph_hits, empty_text="No graph hits found.")
+        st.write("Neighbors")
+        render_table(bundle.graph_neighbors, empty_text="No graph neighbors found.")
+    with tabs[4]:
+        st.text_area("Combined evidence context", value=bundle.context, height=420)
+        st.download_button("Download local context", data=bundle.context, file_name="local_knowledge_context.md", mime="text/markdown")
+    with tabs[5]:
+        render_query_intelligence_plan(bundle.query_plan)
 
 
 def render_local_world_cards(rows: list[dict[str, Any]]) -> None:
@@ -184,6 +553,75 @@ def render_chart(rows: list[dict[str, Any]]) -> None:
             st.bar_chart(df.groupby("source").size().rename("count"))
 
 
+def render_knowledge_graph_tab(default_query: str) -> None:
+    st.subheader("Knowledge Graph")
+    if not GRAPH_NODES_PATH.exists() or not GRAPH_EDGES_PATH.exists():
+        st.info("Knowledge graph is not built yet.")
+        st.code(r".\.venv\Scripts\python.exe scripts\build_knowledge_graph.py", language="powershell")
+        return
+    nodes, edges = load_graph(GRAPH_NODES_PATH, GRAPH_EDGES_PATH)
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        graph_query = st.text_input("Entity search", value=default_query[:180], key="knowledge_graph_query")
+    with col2:
+        node_type = st.selectbox(
+            "Type",
+            options=["", "Publication", "Material", "Process", "Equipment", "Property", "Experiment", "Method", "Facility", "Expert", "Table"],
+            index=0,
+            key="knowledge_graph_type",
+        )
+    with col3:
+        top_k = st.number_input("Top K", min_value=3, max_value=30, value=10, step=1, key="knowledge_graph_top_k")
+    hits = search_entities(nodes, graph_query, node_type=node_type or None, top_k=int(top_k)) if graph_query else []
+    render_table(
+        [
+            {
+                "rank": hit.rank,
+                "score": hit.score,
+                "type": hit.node.get("type"),
+                "label": hit.node.get("label"),
+                "node_id": hit.node.get("node_id"),
+                "docs": len(hit.node.get("doc_ids") or []),
+            }
+            for hit in hits
+        ],
+        empty_text="No graph entities found.",
+    )
+    if not hits:
+        return
+    selected_labels = [f"{hit.node.get('type')}: {hit.node.get('label')}" for hit in hits]
+    selected = st.selectbox("Inspect entity", options=list(range(len(hits))), format_func=lambda index: selected_labels[index], key="knowledge_graph_selected")
+    selected_node = hits[selected].node
+    st.caption(f"node_id={selected_node.get('node_id')}")
+    neighbor_rows = graph_neighbors(nodes, edges, selected_node["node_id"], limit=60)
+    st.write("Neighbors")
+    render_table(
+        [
+            {
+                "relation": row["edge"].get("type"),
+                "type": row["node"].get("type"),
+                "label": row["node"].get("label"),
+                "node_id": row["node"].get("node_id"),
+                "doc_id": row["edge"].get("doc_id"),
+            }
+            for row in neighbor_rows
+        ],
+        empty_text="No neighbors.",
+    )
+    path_rows = paths_to_types(nodes, edges, selected_node["node_id"], limit=20)
+    st.write("Paths to publications/processes/properties")
+    render_table(
+        [
+            {
+                "path": " -> ".join(str(step["node"].get("label")) for step in path),
+                "types": " -> ".join(str(step["node"].get("type")) for step in path),
+            }
+            for path in path_rows
+        ],
+        empty_text="No short paths.",
+    )
+
+
 def render_warnings(warnings: list[str]) -> None:
     if not warnings:
         return
@@ -224,6 +662,9 @@ def query_preview_run(query: str, *, materials_only: bool) -> Any:
 
 def render_pre_search_decomposer(query: str, *, materials_only: bool) -> dict[str, str]:
     preview = query_preview_run(query, materials_only=materials_only)
+    intelligence_plan = plan_query(query)
+    st.subheader("Query Intelligence")
+    render_query_intelligence_plan(intelligence_plan.model_dump(mode="json"))
     rows = query_decomposition(preview)
     st.subheader("Query Decomposer")
     st.caption("Отредактируйте структуру запроса до запуска поиска. Эти поля добавятся к поисковой формулировке для web-search и будущего RAG.")
@@ -302,8 +743,8 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
             "- score также растет за квартиль журнала, если он известен: Q1 +5, Q2 +3, Q3 +1.5, Q4 +0.5;\n"
             "- при `Materials science only` остаются только статьи с domain-сигналами: materials, metallurgy, alloy, ore, nickel, copper, flotation, leaching и т.п."
         )
-    with st.expander("Технический JSON rewrite plan"):
-        st.json(run.query_plan or {})
+    st.subheader("Query Intelligence")
+    render_query_intelligence_plan(run.query_plan or {})
     render_warnings(run.warnings)
     if run.comparison and run.comparison.gaps:
         st.write("Gaps")
@@ -318,9 +759,9 @@ def download_path_button(label: str, path: Any, *, file_name: str, mime: str) ->
 
 def render_run(run: Any) -> None:
     st.session_state["last_run"] = run
-    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Графики", "Отчет"])
-    corrected_query = run.query_plan.get("corrected_query") if run.query_plan else run.request.query
-    search_queries = (run.query_plan or {}).get("search_queries") or []
+    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Local Knowledge", "Knowledge Graph", "Графики", "Отчет"])
+    corrected_query = query_plan_display_query(run.query_plan or {}, run.request.query)
+    search_queries = query_plan_search_queries(run.query_plan or {})
 
     with tabs[0]:
         render_cockpit(run, corrected_query, search_queries)
@@ -410,6 +851,25 @@ def render_run(run: Any) -> None:
             render_table(run.comparison.rows)
 
     with tabs[5]:
+        if st.button("Run route orchestrator", key=f"route_orchestrator_{str(run.output_dir or run.request.query)[-80:]}"):
+            with st.spinner("Running planned retrieval routes..."):
+                st.session_state["last_route_orchestration"] = run_query_orchestration(
+                    run.request.query,
+                    include_web=bool(run.request.sources),
+                    web_sources=run.request.sources,
+                    web_top_k=min(run.request.top_k, 10),
+                    generate_pdf_report=False,
+                )
+        route_result = st.session_state.get("last_route_orchestration")
+        if route_result:
+            render_route_orchestration_result(route_result)
+        else:
+            st.info("Run route orchestrator to execute the planned raw, summary, table, graph and web routes.")
+
+    with tabs[6]:
+        render_knowledge_graph_tab(run.request.query)
+
+    with tabs[7]:
         render_chart(result_rows(run))
         if run.comparison:
             coverage = pd.DataFrame(
@@ -437,7 +897,7 @@ def render_run(run: Any) -> None:
             st.write("Gap radar")
             st.bar_chart(numeric_radar.set_index("signal")["value"])
 
-    with tabs[6]:
+    with tabs[8]:
         st.subheader("Краткий управленческий вывод")
         st.markdown(run.executive_brief_markdown or executive_brief_markdown(run))
         col1, col2, col3 = st.columns(3)
@@ -535,8 +995,9 @@ def render_history() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Поиск научных публикаций", layout="wide")
-    st.title("Поиск научных публикаций")
+    st.set_page_config(page_title="R&D Knowledge Cockpit", layout="wide")
+    render_cockpit_styles()
+    render_hero()
 
     with st.sidebar:
         scenario_options = ["Свободный запрос"] + [item["label"] for item in DEMO_SCENARIOS]
@@ -554,40 +1015,41 @@ def main() -> None:
                 if st.button(preset[:42], key=f"preset_{index}"):
                     st.session_state["queued_query"] = preset
                     st.rerun()
-        st.subheader("Structured filters")
-        geography_filter = st.text_input("Geography", placeholder="например: Норильск, Canada")
-        year_range = st.slider("Publication period", min_value=1950, max_value=2026, value=(2000, 2026), step=1)
+        st.subheader("Retrieval")
         local_search = st.checkbox("Локальный поиск", value=True)
         web_search = st.checkbox("Внешний поиск публикаций", value=True)
-        source_options = st.multiselect(
-            "Search resources",
-            options=ALL_SEARCH_SOURCES,
-            default=DEFAULT_SEARCH_SOURCES,
-            format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
-            disabled=not web_search,
-            help="Это реальные API-базы, по которым выполняется автоматический поиск и ранжирование.",
-        )
-        if "arxiv" in source_options:
-            st.caption("arXiv может отвечать медленнее остальных источников.")
-        top_k = st.slider("Top K", min_value=5, max_value=50, value=20, step=5)
         analysis_mode = st.radio("Analysis mode", options=["Quick search", "Deep analysis"], index=0)
         deep_search = analysis_mode == "Deep analysis"
-        max_deep = max(1, min(top_k, 20))
-        deep_search_limit = st.slider(
-            "Статей для Deep Search",
-            min_value=1,
-            max_value=max_deep,
-            value=min(5, max_deep),
-            step=1,
-            disabled=not deep_search,
-        )
-        fetch_excerpts = st.checkbox("Fetch safe excerpts", value=True, disabled=not deep_search)
         pdf_report = st.checkbox("Generate PDF report", value=True)
         materials_only = st.checkbox("Materials science only", value=True)
-        query_rewrite = st.checkbox("Rewrite/multiply query", value=True)
-        llm_query_rewrite = st.checkbox("Use LLM rewrite if available", value=True, disabled=not query_rewrite)
-        generate_comparison_insights = st.checkbox("Генерировать выводы по сравнению", value=True)
-        language = st.selectbox("Language", options=["auto", "ru", "en"], index=0)
+        with st.expander("Advanced settings", expanded=False):
+            geography_filter = st.text_input("Geography", placeholder="например: Норильск, Canada")
+            year_range = st.slider("Publication period", min_value=1950, max_value=2026, value=(2000, 2026), step=1)
+            source_options = st.multiselect(
+                "Search resources",
+                options=ALL_SEARCH_SOURCES,
+                default=DEFAULT_SEARCH_SOURCES,
+                format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
+                disabled=not web_search,
+                help="Это реальные API-базы, по которым выполняется автоматический поиск и ранжирование.",
+            )
+            if "arxiv" in source_options:
+                st.caption("arXiv может отвечать медленнее остальных источников.")
+            top_k = st.slider("Top K", min_value=5, max_value=50, value=20, step=5)
+            max_deep = max(1, min(top_k, 20))
+            deep_search_limit = st.slider(
+                "Статей для Deep Search",
+                min_value=1,
+                max_value=max_deep,
+                value=min(5, max_deep),
+                step=1,
+                disabled=not deep_search,
+            )
+            fetch_excerpts = st.checkbox("Fetch safe excerpts", value=True, disabled=not deep_search)
+            query_rewrite = st.checkbox("Rewrite/multiply query", value=True)
+            llm_query_rewrite = st.checkbox("Use LLM rewrite if available", value=True, disabled=not query_rewrite)
+            generate_comparison_insights = st.checkbox("Генерировать выводы по сравнению", value=True)
+            language = st.selectbox("Language", options=["auto", "ru", "en"], index=0)
 
     st.session_state["deep_search_limit_setting"] = deep_search_limit
     st.session_state["fetch_excerpts_setting"] = fetch_excerpts
@@ -599,9 +1061,25 @@ def main() -> None:
     if queued_query:
         st.session_state["rd_question"] = queued_query
 
+    render_mode_cards()
+    feature_tabs = st.tabs(["Быстрый поиск", "Сравнение методик", "Табличные данные", "Граф знаний", "Внутреннее vs внешнее"])
+    with feature_tabs[0]:
+        render_prompt_buttons(DEMO_PROMPTS["quick"], target_key="rd_question", prefix="quick")
+    with feature_tabs[1]:
+        render_comparison_mode_panel(include_web=web_search, source_options=source_options, top_k=top_k)
+    with feature_tabs[2]:
+        render_prompt_buttons(DEMO_PROMPTS["tables"], target_key="rd_question", prefix="tables")
+        st.caption("Запросы про числа автоматически маршрутизируются в table_search + raw_rag.")
+    with feature_tabs[3]:
+        render_prompt_buttons(DEMO_PROMPTS["graph"], target_key="rd_question", prefix="graph")
+        render_knowledge_graph_tab(st.session_state.get("rd_question", ""))
+    with feature_tabs[4]:
+        render_prompt_buttons(DEMO_PROMPTS["web_local"], target_key="rd_question", prefix="web_local")
+        st.caption("Для внешних публикаций включите web search в sidebar; локальный контекст останется рядом с web evidence.")
+
     st.subheader("R&D Decision Cockpit")
     rd_question = st.text_area(
-        "R&D question",
+        "Что вы хотите узнать?",
         key="rd_question",
         height=90,
         placeholder="Например: никелевая руда, кучное выщелачивание, холодный климат, извлечение Ni, 2020-2026",
@@ -609,17 +1087,35 @@ def main() -> None:
     pre_search_slots: dict[str, str] = {}
     if rd_question:
         pre_search_slots = render_pre_search_decomposer(rd_question, materials_only=materials_only)
-    col1, col2, col3 = st.columns([1, 1, 3])
+    col1, col2, col_local, col3 = st.columns([1, 1, 1, 3])
     with col1:
         st.button("Decompose query")
     with col2:
         run_from_cockpit = st.button("Run search", type="primary")
+    with col_local:
+        run_local_from_cockpit = st.button("Run local")
     with col3:
         st.caption(f"Mode: {analysis_mode}. Отредактированные slots попадут в поисковую формулировку.")
 
     render_history()
 
-    query = st.chat_input("Спросите про материал, процесс, режим или свойство")
+    local_rendered = False
+    if run_local_from_cockpit:
+        if not rd_question:
+            st.warning("Enter an R&D question before local search.")
+        else:
+            with st.spinner("Running planned retrieval routes..."):
+                st.session_state["last_route_orchestration"] = run_query_orchestration(
+                    rd_question,
+                    include_web=web_search,
+                    web_sources=source_options,
+                    web_top_k=min(top_k, 10),
+                    generate_pdf_report=False,
+                )
+            render_route_orchestration_result(st.session_state["last_route_orchestration"])
+            local_rendered = True
+
+    query = None if run_local_from_cockpit else st.chat_input("Спросите про материал, процесс, режим или свойство")
     active_query = rd_question if run_from_cockpit else query
     if run_from_cockpit and not active_query:
         st.warning("Введите R&D question перед запуском поиска.")
@@ -667,8 +1163,8 @@ def main() -> None:
         render_run(run)
     elif st.session_state.get("last_run"):
         render_run(st.session_state["last_run"])
-    else:
-        st.info("Введите запрос в чат ниже.")
+    elif not local_rendered:
+        render_empty_state()
 
 
 if __name__ == "__main__":
