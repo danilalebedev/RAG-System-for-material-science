@@ -119,3 +119,49 @@ def test_build_defense_bundle_can_refresh_demo_smoke(tmp_path: Path, monkeypatch
     assert "data/processed/demo_smoke/smoke_report.json" in names
     assert bundle_manifest["demo_smoke_status"] == "ok"
     assert bundle_manifest["demo_smoke_run"]["stdout_preview"] == "smoke ok"
+
+
+def test_build_defense_bundle_can_refresh_capability_audit(tmp_path: Path, monkeypatch) -> None:
+    for rel_path in (
+        "reports/oreacle_defense_pack.md",
+        "reports/oreacle_pitch_deck.md",
+        "reports/oreacle_routerai_demo_script.md",
+        "reports/oreacle_demo_video_storyboard.md",
+        "reports/oreacle_marketing_demo_plan.md",
+        "tasks/04_query_gui_eval/README.md",
+    ):
+        write(tmp_path / rel_path, rel_path)
+
+    def fake_run_capability_audit(root: Path, *, timeout_seconds: int) -> dict:
+        assert timeout_seconds == 11
+        write(
+            root / "data" / "processed" / "demo_preflight" / "capability_matrix.json",
+            json.dumps({"status": "pass", "capabilities": [{"id": "gui_three_modes"}]}),
+        )
+        write(
+            root / "data" / "processed" / "demo_preflight" / "capability_matrix.md",
+            "# Oreacle Capability Matrix\n",
+        )
+        return {"returncode": 0, "stdout_preview": "audit pass", "stderr_preview": ""}
+
+    monkeypatch.setattr(defense_bundle_module, "run_capability_audit", fake_run_capability_audit)
+
+    output = tmp_path / "bundle.zip"
+    manifest = build_defense_bundle(
+        tmp_path,
+        output,
+        run_capability_audit_first=True,
+        capability_audit_timeout_seconds=11,
+    )
+
+    assert manifest["capability_matrix_status"] == "pass"
+    assert manifest["capability_audit_run"]["returncode"] == 0
+    with zipfile.ZipFile(output) as zf:
+        names = set(zf.namelist())
+        bundle_manifest = json.loads(zf.read("bundle_manifest.json").decode("utf-8"))
+        readme = zf.read("README_DEFENSE_BUNDLE.md").decode("utf-8")
+
+    assert "data/processed/demo_preflight/capability_matrix.json" in names
+    assert "data/processed/demo_preflight/capability_matrix.md" in names
+    assert bundle_manifest["capability_matrix_status"] == "pass"
+    assert "Capability matrix status: pass" in readme
