@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.index.embeddings import load_retrieval_config
+from app.index.embeddings import apply_retrieval_profile, load_retrieval_config
 from app.llm.provider_router import ProviderRouter
 from app.llm.types import LLMResponse
 from app.query.csv_corpus import TableHit
@@ -114,6 +114,13 @@ def local_diagnostics(config: LocalKnowledgeConfig, plan: QueryPlan) -> dict[str
         "actual_web_query": (getattr(plan, "web_search_queries", []) or [plan.original_query])[0],
         "called_routes": list(plan.routes),
     }
+
+
+def resolve_config_path(root: Path, value: Any, fallback: Path | None = None) -> Path | None:
+    if value in (None, ""):
+        return fallback
+    path = Path(str(value))
+    return path if path.is_absolute() else root / path
 
 
 def raw_rows(chunks: list[EvidenceChunk]) -> list[dict[str, Any]]:
@@ -322,17 +329,94 @@ def has_summary_inputs(config: LocalKnowledgeConfig) -> bool:
     )
 
 
-def run_raw_route(plan: QueryPlan, config: LocalKnowledgeConfig, fallbacks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def run_raw_route(
+    plan: QueryPlan,
+    config: LocalKnowledgeConfig,
+    fallbacks: list[dict[str, Any]],
+    *,
+    retrieval_profile: str | None = None,
+) -> list[dict[str, Any]]:
     if not config.chunks_path or not config.chunks_path.exists():
         fallbacks.append(route_unavailable("raw_rag", f"raw chunks file is missing: {config.chunks_path}"))
         return []
     query = first_query(plan, "raw_rag", plan.original_query)
-    config_path = config.project_root / "config" / "retrieval" / "default.json"
+    retrieval_config_path = config.project_root / "config" / "retrieval" / "default.json"
     index_dir = config.project_root / "data" / "indexes" / "chunks"
     lexical_dir = config.project_root / "data" / "indexes" / "lexical"
-    if config_path.exists() and lexical_dir.exists():
+    retrieval_config: dict[str, Any] | None = None
+    if retrieval_config_path.exists():
         try:
-            retrieval_config = load_retrieval_config(config_path)
+            retrieval_config = apply_retrieval_profile(load_retrieval_config(retrieval_config_path), retrieval_profile)
+        except Exception as exc:  # noqa: BLE001
+            fallbacks.append(route_unavailable("raw_rag_profile", f"retrieval profile unavailable, using scan fallback: {str(exc)[:300]}"))
+            retrieval_config = None
+    if retrieval_config is not None:
+        index_dir = resolve_config_path(config.project_root, retrieval_config.get("chunk_index_dir"), config.project_root / "data" / "indexes" / "chunks") or index_dir
+        lexical_dir = resolve_config_path(config.project_root, retrieval_config.get("lexical_index_dir"), config.project_root / "data" / "indexes" / "lexical") or lexical_dir
+        chunks_path = resolve_config_path(config.project_root, retrieval_config.get("chunks_path"), config.chunks_path) or config.chunks_path
+        publications_dir = resolve_config_path(config.project_root, retrieval_config.get("summary_publications_dir"), config.publications_dir)
+        document_summary_index_dir = resolve_config_path(
+            config.project_root,
+            retrieval_config.get("document_summary_index_dir"),
+            config.project_root / "data" / "indexes" / "document_summaries",
+        )
+        procedure_summary_index_dir = resolve_config_path(
+            config.project_root,
+            retrieval_config.get("procedure_summary_index_dir"),
+            config.project_root / "data" / "indexes" / "procedure_summaries",
+        )
+        if not index_dir.exists() or not (index_dir / "metadata.jsonl").exists():
+            fallbacks.append(
+                route_unavailable(
+                    "raw_rag_indexed",
+                    f"indexed profile '{retrieval_profile or 'default'}' is not ready in {index_dir}; using scan fallback",
+                )
+            )
+        elif lexical_dir.exists():
+            try:
+                results, diagnostics = hybrid_search(
+                    query=query,
+                    retrieval_config=retrieval_config,
+                    index_dir=index_dir,
+                    lexical_dir=lexical_dir,
+                    chunks_path=chunks_path or config.chunks_path,
+                    top_k=config.top_k_raw,
+                    mode="hybrid",
+                    allow_network=True,
+                    root=config.project_root,
+                    publications_dir=publications_dir,
+                    document_summary_index_dir=document_summary_index_dir,
+                    procedure_summary_index_dir=procedure_summary_index_dir,
+                    include_summaries=True,
+                    include_tables=False,
+                    include_graph=False,
+                )
+                if results:
+                    rows = indexed_raw_rows(results)
+                    rows.append(
+                        {
+                            "id": "raw_rag:diagnostics",
+                            "rank": None,
+                            "score": None,
+                            "source_type": "diagnostics",
+                            "doc_id": "",
+                            "chunk_id": "",
+                            "summary_id": "",
+                            "source_path": "",
+                            "local_path": "",
+                            "preview": "",
+                            "score_components": {},
+                            "why": diagnostics.warnings,
+                            "diagnostics": diagnostics.as_dict(),
+                        }
+                    )
+                    return rows
+                fallbacks.append(route_unavailable("raw_rag_indexed", "indexed RAG returned no rows; using scan fallback"))
+            except Exception as exc:  # noqa: BLE001 - scan fallback keeps GUI usable.
+                fallbacks.append(route_unavailable("raw_rag_indexed", f"indexed raw RAG unavailable, using scan fallback: {str(exc)[:300]}"))
+    if retrieval_config_path.exists() and lexical_dir.exists() and retrieval_config is None:
+        try:
+            retrieval_config = load_retrieval_config(retrieval_config_path)
             results, diagnostics = hybrid_search(
                 query=query,
                 retrieval_config=retrieval_config,
@@ -443,6 +527,7 @@ def run_query_orchestration(
     web_deep_search_limit: int = 5,
     generate_pdf_report: bool = False,
     required_routes: list[RouteName] | None = None,
+    retrieval_profile: str | None = None,
 ) -> QueryOrchestrationResult:
     plan = plan_query(query)
     if required_routes:
@@ -460,7 +545,7 @@ def run_query_orchestration(
     evidence: list[dict[str, Any]] = []
     web_run: LiteratureSearchRun | None = None
 
-    raw = run_raw_route(plan, config, fallbacks) if use_internal or "raw_rag" in routes else []
+    raw = run_raw_route(plan, config, fallbacks, retrieval_profile=retrieval_profile) if use_internal or "raw_rag" in routes else []
     summaries = run_summary_route(plan, config, fallbacks) if use_internal or "summary_rag" in routes else []
     tables = run_table_route(plan, config, fallbacks) if "table_search" in routes else []
     graph = run_graph_route(plan, config, fallbacks) if "graph_search" in routes else []

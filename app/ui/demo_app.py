@@ -366,6 +366,7 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
             web_deep_search_limit=options["deep_limit"],
             generate_pdf_report=options["generate_pdf"],
             required_routes=REQUEST_TYPES[request_type],
+            retrieval_profile=options["retrieval_profile"],
         )
         literature_run = orchestration.web_run
         if options["generate_answer"]:
@@ -385,6 +386,7 @@ def render_sidebar() -> dict[str, Any]:
     with st.sidebar:
         st.header("Настройки")
         request_type = st.radio("Тип запроса", list(REQUEST_TYPES), horizontal=False)
+        retrieval_profile = st.selectbox("RAG profile", ["routerai_bge_m3", "yandex", "default"], index=0)
         local_search = st.checkbox("Local search", value=True)
         web_search = st.checkbox("Web literature search", value=True)
         use_llm_rewrite = st.checkbox("LLM rewrite запроса", value=True)
@@ -404,6 +406,7 @@ def render_sidebar() -> dict[str, Any]:
         fetch_excerpts = st.checkbox("Загружать безопасные excerpts", value=True)
     return {
         "request_type": request_type,
+        "retrieval_profile": None if retrieval_profile == "default" else retrieval_profile,
         "local_search": local_search,
         "web_search": web_search,
         "use_llm_rewrite": use_llm_rewrite,
