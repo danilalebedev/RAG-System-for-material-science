@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.query.cockpit import graphviz_dot as literature_graphviz_dot  # noqa: E402
 from app.query.literature import answer_literature_with_provider_router, run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
@@ -171,6 +172,15 @@ def graph_dot_from_orchestration(orchestration: Any | None) -> str:
             lines.append(f'"{node_type}" -> "{label}";')
     lines.append("}")
     return "\n".join(lines)
+
+
+def knowledge_graph_dot(run: Any | None, orchestration: Any | None) -> str:
+    rows = orchestration_rows(orchestration, "graph")
+    if rows:
+        return graph_dot_from_orchestration(orchestration)
+    if run is not None:
+        return literature_graphviz_dot(run)
+    return "digraph G { rankdir=LR; empty [label=\"Нет графовых связей\"]; }"
 
 
 def method_graph_dot(run: Any | None) -> str:
@@ -404,10 +414,12 @@ def render_result(record: dict[str, Any]) -> None:
                 render_table(orchestration.fallbacks)
 
     with tabs[4]:
+        render_section_exports(run, "graphs", "графы")
+        render_orchestration_section_exports(record, "graphs", "графы")
         col_a, col_b = st.columns(2)
         with col_a:
             st.markdown("**Knowledge graph**")
-            st.graphviz_chart(graph_dot_from_orchestration(orchestration), use_container_width=True)
+            st.graphviz_chart(knowledge_graph_dot(run, orchestration), use_container_width=True)
         with col_b:
             st.markdown("**Методики: local vs web**")
             st.graphviz_chart(method_graph_dot(run), use_container_width=True)

@@ -43,11 +43,12 @@ from app.query.reports import (
     build_run_archive,
     build_section_exports,
     comparison_insights,
+    literature_graph_markdown,
     relevance_confidence,
     run_overall_summary,
 )
 from app.query.rewrite import deterministic_query_rewrite
-from app.ui.demo_app import table_df
+from app.ui.demo_app import knowledge_graph_dot, table_df
 from app.web_search.open_access import OpenAccessResolver
 from app.web_search.resource_links import build_resource_links
 from app.web_search.schemas import DeepSearchResult, LiteratureSearchRequest, LiteratureSearchResult, LiteratureSearchRun, MethodComparison
@@ -808,6 +809,10 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     assert {"from": "Expert: A. Expert", "to": "Publication: Nickel alloy annealing hardness", "relation": "authored", "scope": "web"} in graph_edges
     assert {"from": "Publication: Local nickel work", "to": "Experiment: annealing", "relation": "describes", "scope": "local"} in graph_edges
     assert {"from": "Material: nickel alloy", "to": "Process: annealing", "relation": "processed by", "scope": "local"} in graph_edges
+    graph_markdown = literature_graph_markdown(run)
+    assert "Publication: Nickel alloy annealing hardness" in graph_markdown
+    graph_dot = knowledge_graph_dot(run, None)
+    assert "Publication: Nickel alloy annealing hardness" in graph_dot
     assert any(row["signal"] == "Разные условия/диапазоны" and row["value"] == 1 for row in gap_radar_rows(run))
     brief = executive_brief_markdown(run)
     assert "Краткий управленческий вывод" in brief

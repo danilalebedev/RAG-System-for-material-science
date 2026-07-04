@@ -672,12 +672,30 @@ def markdown_to_pdf(text: str, output_path: Path) -> Path:
     return output_path
 
 
+def literature_graph_markdown(run: Any) -> str:
+    from app.query.cockpit import mini_graph_edges
+
+    lines = ["# Граф evidence", "", f"Запрос: {compact_text(run.request.query)}", ""]
+    edges = mini_graph_edges(run)
+    if not edges:
+        lines.append("Graph edges не найдены.")
+        return "\n".join(lines).strip() + "\n"
+    lines.extend(["## Ребра"])
+    for index, edge in enumerate(edges[:80], start=1):
+        lines.append(
+            f"{index}. {compact_text(edge.get('from'), 180)} --[{compact_text(edge.get('relation'), 80)} / {compact_text(edge.get('scope'), 40)}]--> {compact_text(edge.get('to'), 180)}"
+        )
+    return "\n".join(lines).strip() + "\n"
+
+
 def build_section_markdown(run: Any, section: str) -> str:
     section = section.lower().strip()
     if section == "sources":
         return build_links_report(run)
     if section == "deep":
         return build_deep_report(run)
+    if section in {"graphs", "graph"}:
+        return literature_graph_markdown(run)
     if section == "charts":
         lines = ["# Распределения публикаций", "", f"Запрос: {compact_text(run.request.query)}", "", "## По годам"]
         lines.extend([f"- {row['year']}: {row['count']}" for row in year_counts(run)] or ["- Нет данных по годам."])

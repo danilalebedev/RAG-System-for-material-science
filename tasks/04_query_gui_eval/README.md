@@ -299,6 +299,8 @@ Streamlit-приложении.
 - `Сравнение`: confirmed/local-only/web-only методики, различающиеся условия и property/numeric rows.
 - `Evidence`: Raw RAG, Summary RAG, Tables и fallbacks.
 - `Графы`: local knowledge graph и local-vs-web method graph.
+  Если local graph route не вернул rows или открыт чистый literature run, GUI использует fallback mini graph
+  из web/local/deep/comparison evidence, чтобы вкладка не была пустой.
 - `Графики`: распределение публикаций по годам и базам данных.
 - `Отчеты`: выгрузка RouterAI answer report, full report, links-only report, Deep Search report,
   executive brief, DOCX/PDF/JSON и ZIP artifacts.
@@ -334,7 +336,7 @@ Streamlit-приложении.
   включая `relevance_confidence`;
 - `local_publication_files_manifest.json` - manifest локальных файлов, которые удалось найти и включить в архив;
 - `section_reports/<section>_report.md/.pdf/.docx` - выгрузки отдельных GUI-вкладок `sources`, `comparison`, `evidence`,
-  `charts`, `deep`;
+  `graphs`, `charts`, `deep`;
 - `run_artifacts.zip` - единый архив run-а: JSON/JSONL/Markdown/PDF/DOCX, manifests, секционные отчеты и до 20 найденных
   локальных публикационных файлов из проекта.
 
