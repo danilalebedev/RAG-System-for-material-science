@@ -243,6 +243,9 @@ def test_orchestration_exports_and_archive_include_local_sources(tmp_path: Path)
                     "source_type": "procedure_summary",
                     "title": "Procedure summary",
                     "preview": "Heat treatment affects hardness.",
+                    "outputs": ["hardness"],
+                    "numeric_results": ["220 HV"],
+                    "conditions": [{"temperature": "900 C"}],
                     "score": 0.8,
                 }
             ],
@@ -266,6 +269,8 @@ def test_orchestration_exports_and_archive_include_local_sources(tmp_path: Path)
     assert exports["pdf"].exists()
     assert exports["docx"].exists()
     assert "RouterAI answer" in exports["markdown"].read_text(encoding="utf-8")
+    property_exports = build_orchestration_exports(orchestration, "properties", output_dir / "section_reports", answer=answer)
+    assert "220 HV" in property_exports["markdown"].read_text(encoding="utf-8")
 
     archive = build_orchestration_archive(orchestration, output_dir / "orchestration_artifacts.zip", answer=answer, project_root=tmp_path)
     assert archive.exists()
@@ -276,4 +281,6 @@ def test_orchestration_exports_and_archive_include_local_sources(tmp_path: Path)
     assert "orchestration_local_files_manifest.json" in names
     assert "section_reports/full_report.pdf" in names
     assert "section_reports/full_report.docx" in names
+    assert "section_reports/properties_report.pdf" in names
+    assert "section_reports/properties_report.docx" in names
     assert "local_publications/01_local_method.txt" in names

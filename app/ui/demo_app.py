@@ -408,7 +408,9 @@ def render_result(record: dict[str, Any]) -> None:
 
     with tabs[2]:
         render_section_exports(run, "comparison", "сравнение")
+        render_section_exports(run, "properties", "свойства")
         render_orchestration_section_exports(record, "comparison", "сравнение")
+        render_orchestration_section_exports(record, "properties", "свойства")
         st.markdown("**Подтверждается локально и во внешней литературе**")
         render_table(comparison_rows(run, "confirmed_methods"))
         st.markdown("**Только локально**")

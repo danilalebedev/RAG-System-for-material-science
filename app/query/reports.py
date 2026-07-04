@@ -688,6 +688,110 @@ def literature_graph_markdown(run: Any) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def property_report_rows_from_run(run: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    comparison = getattr(run, "comparison", None)
+    for row in getattr(comparison, "rows", []) or []:
+        rows.append(
+            {
+                "scope": row.get("scope"),
+                "material": row.get("material") or row.get("material_name"),
+                "method": row.get("method") or row.get("synthesis_or_process_method"),
+                "properties": row.get("properties") or row.get("outputs") or row.get("observed_effects"),
+                "numeric_results": row.get("numeric_results") or row.get("numerical_results") or row.get("analysis_results"),
+                "conditions": row.get("conditions"),
+                "evidence": row.get("title") or row.get("doc_id") or row.get("result_id"),
+            }
+        )
+    for deep_result in getattr(run, "deep_results", []) or []:
+        source = getattr(deep_result, "source_result", None)
+        for procedure in getattr(deep_result, "procedure_summaries", []) or []:
+            rows.append(
+                {
+                    "scope": "web_deep_search",
+                    "material": procedure.get("material_name") or procedure.get("materials"),
+                    "method": procedure.get("synthesis_or_process_method") or procedure.get("method"),
+                    "properties": procedure.get("properties") or procedure.get("outputs") or procedure.get("observed_effects"),
+                    "numeric_results": procedure.get("numeric_results") or procedure.get("numerical_results") or procedure.get("analysis_results"),
+                    "conditions": procedure.get("conditions"),
+                    "evidence": getattr(source, "title", "") if source is not None else procedure.get("result_id"),
+                }
+            )
+    for row in getattr(run, "local_matches", []) or []:
+        if any(row.get(key) for key in ("outputs", "properties", "numeric_results", "analysis_results", "conditions")):
+            rows.append(
+                {
+                    "scope": "local",
+                    "material": row.get("material") or row.get("material_name"),
+                    "method": row.get("method") or row.get("synthesis_or_process_method"),
+                    "properties": row.get("properties") or row.get("outputs") or row.get("observed_effects"),
+                    "numeric_results": row.get("numeric_results") or row.get("numerical_results") or row.get("analysis_results"),
+                    "conditions": row.get("conditions"),
+                    "evidence": row.get("title") or row.get("doc_id") or row.get("source_path"),
+                }
+            )
+    return rows[:120]
+
+
+def property_report_rows_from_orchestration(orchestration: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    context = orchestration_context(orchestration)
+    for section, section_rows in context.items():
+        for row in section_rows or []:
+            if row.get("source_type") == "diagnostics":
+                continue
+            payload = row.get("row") if isinstance(row.get("row"), dict) else row
+            has_property_signal = any(
+                payload.get(key) or row.get(key)
+                for key in (
+                    "properties",
+                    "outputs",
+                    "observed_effects",
+                    "numeric_results",
+                    "numerical_results",
+                    "analysis_results",
+                    "conditions",
+                    "rows",
+                    "summary",
+                    "preview",
+                )
+            )
+            if not has_property_signal:
+                continue
+            rows.append(
+                {
+                    "scope": section,
+                    "material": payload.get("material") or payload.get("material_name") or row.get("matched_terms"),
+                    "method": payload.get("method") or payload.get("synthesis_or_process_method"),
+                    "properties": payload.get("properties") or payload.get("outputs") or payload.get("observed_effects") or row.get("summary"),
+                    "numeric_results": payload.get("numeric_results")
+                    or payload.get("numerical_results")
+                    or payload.get("analysis_results")
+                    or row.get("preview")
+                    or row.get("rows"),
+                    "conditions": payload.get("conditions") or row.get("path"),
+                    "evidence": row_title(row),
+                }
+            )
+    return rows[:120]
+
+
+def property_report_markdown(title: str, query: str, rows: list[dict[str, Any]]) -> str:
+    lines = [f"# {title}", "", f"Запрос: {compact_text(query)}", ""]
+    if not rows:
+        lines.append("Свойства и численные результаты не найдены.")
+        return "\n".join(lines).strip() + "\n"
+    lines.append("## Свойства, условия и численные результаты")
+    for index, row in enumerate(rows, start=1):
+        lines.append(f"{index}. {compact_text(row.get('material') or 'material n/a', 180)}; {compact_text(row.get('method') or 'method n/a', 180)}")
+        lines.append(f"   - scope: {compact_text(row.get('scope'), 80)}")
+        lines.append(f"   - properties/outputs: {compact_text(row.get('properties'), 500)}")
+        lines.append(f"   - numeric results: {compact_text(row.get('numeric_results'), 500)}")
+        lines.append(f"   - conditions: {compact_text(row.get('conditions'), 500)}")
+        lines.append(f"   - evidence: {compact_text(row.get('evidence'), 260)}")
+    return "\n".join(lines).strip() + "\n"
+
+
 def build_section_markdown(run: Any, section: str) -> str:
     section = section.lower().strip()
     if section == "sources":
@@ -696,6 +800,8 @@ def build_section_markdown(run: Any, section: str) -> str:
         return build_deep_report(run)
     if section in {"graphs", "graph"}:
         return literature_graph_markdown(run)
+    if section in {"properties", "property", "numeric"}:
+        return property_report_markdown("Свойства и численные результаты", run.request.query, property_report_rows_from_run(run))
     if section == "charts":
         lines = ["# Распределения публикаций", "", f"Запрос: {compact_text(run.request.query)}", "", "## По годам"]
         lines.extend([f"- {row['year']}: {row['count']}" for row in year_counts(run)] or ["- Нет данных по годам."])
@@ -1013,6 +1119,10 @@ def orchestration_section_markdown(
         ]
         append_orchestration_rows(lines, "Методики и режимы", procedure_rows, limit=30)
 
+    if section in {"properties", "property", "numeric", "full"}:
+        property_rows = property_report_rows_from_orchestration(orchestration)
+        lines.extend(["", property_report_markdown("Свойства и численные результаты", orchestration_query(orchestration, query), property_rows).strip()])
+
     if section in {"graphs", "graph", "full"}:
         append_orchestration_rows(lines, "Graph evidence", context.get("graph") or [], limit=40)
 
@@ -1250,7 +1360,7 @@ def build_run_archive(
         web_manifest,
         local_manifest_path,
     ]
-    for section in ("sources", "comparison", "evidence", "charts", "deep"):
+    for section in ("sources", "comparison", "properties", "evidence", "graphs", "charts", "deep"):
         candidate_paths.extend(build_section_exports(run, section, run_dir / "section_reports").values())
     if answer is not None:
         candidate_paths.extend(
@@ -1317,7 +1427,7 @@ def build_orchestration_archive(
         web_manifest,
         local_manifest_path,
     ]
-    for section in ("full", "answer", "sources", "comparison", "evidence", "graphs", "charts"):
+    for section in ("full", "answer", "sources", "comparison", "properties", "evidence", "graphs", "charts"):
         candidate_paths.extend(
             build_orchestration_exports(
                 orchestration,

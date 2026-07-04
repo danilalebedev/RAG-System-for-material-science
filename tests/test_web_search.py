@@ -44,6 +44,8 @@ from app.query.reports import (
     build_section_exports,
     comparison_insights,
     literature_graph_markdown,
+    property_report_markdown,
+    property_report_rows_from_run,
     relevance_confidence,
     run_overall_summary,
 )
@@ -813,6 +815,11 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     assert "Publication: Nickel alloy annealing hardness" in graph_markdown
     graph_dot = knowledge_graph_dot(run, None)
     assert "Publication: Nickel alloy annealing hardness" in graph_dot
+    property_rows_for_report = property_report_rows_from_run(run)
+    assert property_rows_for_report
+    property_markdown = property_report_markdown("Свойства", run.request.query, property_rows_for_report)
+    assert "hardness" in property_markdown
+    assert "ductility" in property_markdown
     assert any(row["signal"] == "Разные условия/диапазоны" and row["value"] == 1 for row in gap_radar_rows(run))
     brief = executive_brief_markdown(run)
     assert "Краткий управленческий вывод" in brief
@@ -925,6 +932,20 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
         score=2.5,
         keyword_hits=["nickel"],
     )
+    comparison = MethodComparison(
+        query="nickel alloy annealing",
+        rows=[
+            {
+                "scope": "web",
+                "material": "nickel alloy",
+                "method": "annealing",
+                "outputs": ["hardness"],
+                "numeric_results": ["220 HV"],
+                "conditions": [{"temperature": "900 C"}],
+                "title": "Nickel alloy annealing hardness",
+            }
+        ],
+    )
     run = LiteratureSearchRun(
         request=LiteratureSearchRequest(query="nickel alloy annealing", generate_pdf_report=True),
         query_plan={"corrected_query": "nickel alloy annealing", "search_queries": ["nickel alloy annealing materials science"]},
@@ -932,7 +953,7 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
         results=[result],
         local_matches=[{"doc_id": "doc1", "title": "Local nickel report", "local_path": str(local_file)}],
         deep_results=[],
-        comparison=None,
+        comparison=comparison,
         output_dir=run_dir,
     )
 
@@ -940,6 +961,8 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     assert exports["pdf"].exists()
     assert exports["docx"].exists()
     assert exports["markdown"].read_text(encoding="utf-8")
+    property_exports = build_section_exports(run, "properties", run_dir / "section_reports")
+    assert "220 HV" in property_exports["markdown"].read_text(encoding="utf-8")
 
     answer = LLMResponse(text="RouterAI synthesized literature answer.", provider="routerai", model="test", status="primary", used_evidence=True)
     answer_exports = build_answer_exports(run_dir / "answer_report", query="nickel alloy annealing", answer=answer, run=run)
@@ -962,6 +985,8 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     assert "local_publication_files_manifest.json" in names
     assert "section_reports/sources_report.pdf" in names
     assert "section_reports/sources_report.docx" in names
+    assert "section_reports/properties_report.pdf" in names
+    assert "section_reports/properties_report.docx" in names
     assert "answer_report/routerai_answer.pdf" in names
     assert "answer_report/routerai_answer.docx" in names
     assert "answer_report/routerai_answer.json" in names
