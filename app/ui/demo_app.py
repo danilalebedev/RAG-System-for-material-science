@@ -34,10 +34,13 @@ from app.query.cockpit import (  # noqa: E402
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
+from app.graph.search import load_graph, neighbors as graph_neighbors, paths_to_types, search_entities  # noqa: E402
 from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, SEARCH_SOURCE_LABELS, LiteratureSearchRequest  # noqa: E402
 
 
 load_dotenv(ROOT / ".env")
+GRAPH_NODES_PATH = ROOT / "data" / "index" / "knowledge_graph_nodes.jsonl"
+GRAPH_EDGES_PATH = ROOT / "data" / "index" / "knowledge_graph_edges.jsonl"
 
 
 def display_value(value: Any, *, max_chars: int = 900) -> Any:
@@ -184,6 +187,75 @@ def render_chart(rows: list[dict[str, Any]]) -> None:
             st.bar_chart(df.groupby("source").size().rename("count"))
 
 
+def render_knowledge_graph_tab(default_query: str) -> None:
+    st.subheader("Knowledge Graph")
+    if not GRAPH_NODES_PATH.exists() or not GRAPH_EDGES_PATH.exists():
+        st.info("Knowledge graph is not built yet.")
+        st.code(r".\.venv\Scripts\python.exe scripts\build_knowledge_graph.py", language="powershell")
+        return
+    nodes, edges = load_graph(GRAPH_NODES_PATH, GRAPH_EDGES_PATH)
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        graph_query = st.text_input("Entity search", value=default_query[:180], key="knowledge_graph_query")
+    with col2:
+        node_type = st.selectbox(
+            "Type",
+            options=["", "Publication", "Material", "Process", "Equipment", "Property", "Experiment", "Method", "Facility", "Expert", "Table"],
+            index=0,
+            key="knowledge_graph_type",
+        )
+    with col3:
+        top_k = st.number_input("Top K", min_value=3, max_value=30, value=10, step=1, key="knowledge_graph_top_k")
+    hits = search_entities(nodes, graph_query, node_type=node_type or None, top_k=int(top_k)) if graph_query else []
+    render_table(
+        [
+            {
+                "rank": hit.rank,
+                "score": hit.score,
+                "type": hit.node.get("type"),
+                "label": hit.node.get("label"),
+                "node_id": hit.node.get("node_id"),
+                "docs": len(hit.node.get("doc_ids") or []),
+            }
+            for hit in hits
+        ],
+        empty_text="No graph entities found.",
+    )
+    if not hits:
+        return
+    selected_labels = [f"{hit.node.get('type')}: {hit.node.get('label')}" for hit in hits]
+    selected = st.selectbox("Inspect entity", options=list(range(len(hits))), format_func=lambda index: selected_labels[index], key="knowledge_graph_selected")
+    selected_node = hits[selected].node
+    st.caption(f"node_id={selected_node.get('node_id')}")
+    neighbor_rows = graph_neighbors(nodes, edges, selected_node["node_id"], limit=60)
+    st.write("Neighbors")
+    render_table(
+        [
+            {
+                "relation": row["edge"].get("type"),
+                "type": row["node"].get("type"),
+                "label": row["node"].get("label"),
+                "node_id": row["node"].get("node_id"),
+                "doc_id": row["edge"].get("doc_id"),
+            }
+            for row in neighbor_rows
+        ],
+        empty_text="No neighbors.",
+    )
+    path_rows = paths_to_types(nodes, edges, selected_node["node_id"], limit=20)
+    st.write("Paths to publications/processes/properties")
+    render_table(
+        [
+            {
+                "path": " -> ".join(str(step["node"].get("label")) for step in path),
+                "types": " -> ".join(str(step["node"].get("type")) for step in path),
+            }
+            for path in path_rows
+        ],
+        empty_text="No short paths.",
+    )
+
+
 def render_warnings(warnings: list[str]) -> None:
     if not warnings:
         return
@@ -318,7 +390,7 @@ def download_path_button(label: str, path: Any, *, file_name: str, mime: str) ->
 
 def render_run(run: Any) -> None:
     st.session_state["last_run"] = run
-    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Графики", "Отчет"])
+    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Knowledge Graph", "Графики", "Отчет"])
     corrected_query = run.query_plan.get("corrected_query") if run.query_plan else run.request.query
     search_queries = (run.query_plan or {}).get("search_queries") or []
 
@@ -410,6 +482,9 @@ def render_run(run: Any) -> None:
             render_table(run.comparison.rows)
 
     with tabs[5]:
+        render_knowledge_graph_tab(run.request.query)
+
+    with tabs[6]:
         render_chart(result_rows(run))
         if run.comparison:
             coverage = pd.DataFrame(
@@ -437,7 +512,7 @@ def render_run(run: Any) -> None:
             st.write("Gap radar")
             st.bar_chart(numeric_radar.set_index("signal")["value"])
 
-    with tabs[6]:
+    with tabs[7]:
         st.subheader("Краткий управленческий вывод")
         st.markdown(run.executive_brief_markdown or executive_brief_markdown(run))
         col1, col2, col3 = st.columns(3)
