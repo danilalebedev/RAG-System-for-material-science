@@ -43,6 +43,7 @@ from app.query.reports import (
     build_run_archive,
     build_section_exports,
     comparison_insights,
+    relevance_confidence,
     run_overall_summary,
 )
 from app.query.rewrite import deterministic_query_rewrite
@@ -446,6 +447,10 @@ def test_journal_quartile_boost_increases_score() -> None:
     assert result.raw["journal_quartile"] == "Q1"
     assert result.raw["journal_quartile_boost"] == 5.0
     assert score >= 17.0
+    confidence = relevance_confidence(result)
+    assert confidence["label"] == "Высокая"
+    assert confidence["confidence"] >= 72
+    assert any("квартиль журнала: Q1" in reason for reason in confidence["reasons"])
 
 
 def test_dedupe_ranking_prefers_known_higher_quartile_when_relevance_is_close() -> None:
@@ -882,6 +887,7 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
     deep = build_deep_report(run)
     assert "Отчет по релевантным ссылкам" in links
     assert "https://example.org/paper" in links
+    assert "Confidence:" in links
     assert "Deep Search отчет" in deep
     assert "Annealing changes hardness" in deep
     brief = build_executive_brief_report(run)
@@ -941,6 +947,10 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
 
     archive = build_run_archive(run, run_dir / "run_artifacts.zip", project_root=tmp_path, answer=answer, query="nickel alloy annealing")
     assert archive.exists()
+    web_manifest = json.loads((run_dir / "web_links_manifest.json").read_text(encoding="utf-8"))
+    assert web_manifest["web_links"][0]["relevance_confidence"]["label"] in {"Средняя", "Высокая", "Низкая"}
+    links_csv = (run_dir / "links.csv").read_text(encoding="utf-8-sig")
+    assert "confidence_percent" in links_csv
     with zipfile.ZipFile(archive) as zf:
         names = set(zf.namelist())
     assert "web_links_manifest.json" in names

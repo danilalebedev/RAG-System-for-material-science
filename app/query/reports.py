@@ -107,6 +107,66 @@ def source_link(result: Any) -> str:
     return link or compact_text(getattr(result, "doi", "") or getattr(result, "result_id", ""))
 
 
+def result_quartile(result: Any) -> str:
+    raw = getattr(result, "raw", None) or {}
+    return compact_text(getattr(result, "journal_quartile", None) or raw.get("journal_quartile"), 20)
+
+
+def relevance_confidence(result: Any) -> dict[str, Any]:
+    raw = getattr(result, "raw", None) or {}
+    score = float(getattr(result, "score", 0.0) or 0.0)
+    keyword_hits = list(getattr(result, "keyword_hits", []) or [])
+    title_hits = list(raw.get("title_relevance_hits") or [])
+    snippet_hits = list(raw.get("snippet_relevance_hits") or [])
+    domain_hits = list(raw.get("materials_domain_hits") or [])
+    quartile = result_quartile(result)
+
+    percent = min(98, max(5, int(round(score * 3.2))))
+    strong_quartile = quartile in {"Q1", "Q2"}
+    if score >= 22 or (score >= 16 and (strong_quartile or len(keyword_hits) >= 3)):
+        label = "Высокая"
+        percent = max(percent, 72)
+    elif score >= 10 or keyword_hits or domain_hits:
+        label = "Средняя"
+        percent = max(percent, 42)
+    else:
+        label = "Низкая"
+        percent = min(percent, 39)
+
+    reasons: list[str] = []
+    if keyword_hits:
+        reasons.append("ключевые совпадения: " + ", ".join(compact_text(item, 60) for item in keyword_hits[:5]))
+    if title_hits:
+        reasons.append("совпадения в заголовке: " + ", ".join(compact_text(item, 60) for item in title_hits[:4]))
+    if snippet_hits:
+        reasons.append("совпадения в abstract/snippet: " + ", ".join(compact_text(item, 60) for item in snippet_hits[:4]))
+    if domain_hits:
+        reasons.append("materials-domain signals: " + ", ".join(compact_text(item, 60) for item in domain_hits[:4]))
+    if quartile:
+        reasons.append(f"квартиль журнала: {quartile}")
+    if getattr(result, "doi", None):
+        reasons.append("есть DOI")
+    if getattr(result, "abstract", None):
+        reasons.append("есть abstract")
+    if getattr(result, "citation_count", None):
+        reasons.append(f"цитирований: {getattr(result, 'citation_count')}")
+    if not reasons:
+        reasons.append("мало проверяемых metadata-сигналов; нужна ручная проверка")
+
+    return {
+        "label": label,
+        "confidence": percent,
+        "score": round(score, 3),
+        "reasons": unique_limited(reasons, limit=6),
+    }
+
+
+def relevance_confidence_text(result: Any) -> str:
+    confidence = relevance_confidence(result)
+    reasons = "; ".join(confidence["reasons"])
+    return f"{confidence['label']} ({confidence['confidence']}%); score={confidence['score']}; {reasons}"
+
+
 def year_counts(run: Any) -> list[dict[str, Any]]:
     counts: dict[int, int] = {}
     for result in getattr(run, "results", []) or []:
@@ -221,6 +281,7 @@ def build_links_report(run: Any) -> str:
             title = compact_text(result.title, 300)
             link = source_link(result)
             lines.append(f"{index}. [{title}]({link})" if link.startswith("http") else f"{index}. {title} - {link}")
+            lines.append(f"   - Confidence: {relevance_confidence_text(result)}")
     else:
         lines.append("Внешние публикации не найдены.")
 
@@ -275,6 +336,7 @@ def build_executive_brief_report(run: Any) -> str:
         lines.extend(["", "## Самые релевантные ссылки"])
         for index, result in enumerate(run.results[:8], start=1):
             lines.append(f"{index}. {compact_text(result.title, 220)} - {source_link(result)}")
+            lines.append(f"   - Confidence: {relevance_confidence_text(result)}")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -309,6 +371,7 @@ def build_literature_report(run: Any) -> str:
     if getattr(run, "results", None):
         for index, result in enumerate(run.results, start=1):
             lines.append(f"{index}. [{compact_text(result.title, 300)}]({source_link(result)})")
+            lines.append(f"   - Confidence: {relevance_confidence_text(result)}")
     else:
         lines.append("Внешние публикации не найдены.")
 
@@ -699,6 +762,7 @@ def answer_report_links(run: Any | None, *, limit: int = 25) -> list[dict[str, A
     if run is None:
         return rows
     for index, result in enumerate((getattr(run, "results", []) or [])[:limit], start=1):
+        confidence = relevance_confidence(result)
         rows.append(
             {
                 "index": index,
@@ -706,6 +770,7 @@ def answer_report_links(run: Any | None, *, limit: int = 25) -> list[dict[str, A
                 "year": getattr(result, "year", None),
                 "source": getattr(result, "source", ""),
                 "score": getattr(result, "score", None),
+                "confidence": confidence,
                 "link": source_link(result),
             }
         )
@@ -744,7 +809,8 @@ def build_answer_report_markdown(
     lines.extend(["", "## Релевантные web-ссылки"])
     if links:
         for row in links:
-            suffix = f"; score={row['score']}" if row.get("score") not in (None, "") else ""
+            confidence = row.get("confidence") or {}
+            suffix = f"; confidence={confidence.get('label')} {confidence.get('confidence')}%; score={row['score']}" if row.get("score") not in (None, "") else ""
             lines.append(f"{row['index']}. {row['title']} ({row.get('source') or 'source'}, {row.get('year') or 'n/a'}){suffix}")
             if row.get("link"):
                 lines.append(f"   - {row['link']}")
@@ -1006,9 +1072,21 @@ def write_links_csv(run: Any, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["#", "title", "year", "source", "link"])
+        writer.writerow(["#", "title", "year", "source", "confidence", "confidence_percent", "score", "link"])
         for index, result in enumerate(getattr(run, "results", []) or [], start=1):
-            writer.writerow([index, compact_text(result.title, 500), result.year or "", result.source, source_link(result)])
+            confidence = relevance_confidence(result)
+            writer.writerow(
+                [
+                    index,
+                    compact_text(result.title, 500),
+                    result.year or "",
+                    result.source,
+                    confidence["label"],
+                    confidence["confidence"],
+                    confidence["score"],
+                    source_link(result),
+                ]
+            )
     return output_path
 
 
@@ -1025,6 +1103,7 @@ def write_web_links_manifest(run: Any, output_path: Path) -> Path:
                 "url": source_link(result),
                 "open_access": getattr(result, "open_access", {}) or {},
                 "score": result.score,
+                "relevance_confidence": relevance_confidence(result),
                 "keyword_hits": result.keyword_hits,
             }
         )

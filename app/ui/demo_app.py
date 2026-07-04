@@ -25,6 +25,7 @@ from app.query.reports import (  # noqa: E402
     comparison_insights,
     compact_text,
     repair_mojibake,
+    relevance_confidence,
     result_link,
     run_overall_summary,
     safe_report_id,
@@ -73,14 +74,17 @@ def source_rows(run: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, result in enumerate(getattr(run, "results", []) or [], start=1):
         raw = getattr(result, "raw", None) or {}
+        confidence = relevance_confidence(result)
         rows.append(
             {
                 "#": index,
                 "title": result.title,
                 "year": result.year,
                 "source": SEARCH_SOURCE_LABELS.get(result.source, result.source),
+                "confidence": f"{confidence['label']} ({confidence['confidence']}%)",
                 "score": round(float(result.score or 0.0), 3),
                 "quartile": getattr(result, "journal_quartile", None) or raw.get("journal_quartile") or "",
+                "why": "; ".join(confidence["reasons"]),
                 "link": result_link(result),
             }
         )
