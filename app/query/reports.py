@@ -26,6 +26,7 @@ MOJIBAKE_MARKERS = ("Р", "С", "Ð", "Ñ", "в†", "В°", "Вµ")
 MAX_LOCAL_ARCHIVE_FILES = 20
 MAX_LOCAL_ARCHIVE_BYTES = 250 * 1024 * 1024
 DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
+XML_INVALID_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF]")
 
 
 def repair_mojibake(value: Any) -> str:
@@ -46,6 +47,7 @@ def compact_text(value: Any, max_chars: int | None = None) -> str:
         text = json.dumps(value, ensure_ascii=False, default=str)
     else:
         text = repair_mojibake(value)
+    text = XML_INVALID_CHAR_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if max_chars is not None and len(text) > max_chars:
         return text[: max_chars - 3].rstrip() + "..."

@@ -42,6 +42,7 @@ from app.query.reports import (
     build_pdf_report,
     build_run_archive,
     build_section_exports,
+    compact_text,
     comparison_insights,
     literature_graph_markdown,
     property_report_markdown,
@@ -887,9 +888,9 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
     result = LiteratureSearchResult(
         result_id="crossref_docx",
         source="crossref",
-        title="Nickel alloy annealing hardness",
+        title="Nickel alloy\x00 annealing\x08 hardness",
         year=2024,
-        url="https://example.org/paper",
+        url="https://example.org/paper\x0b",
     )
     run = LiteratureSearchRun(
         request=LiteratureSearchRequest(query="nickel alloy annealing", generate_pdf_report=True),
@@ -901,11 +902,12 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
             DeepSearchResult(
                 result_id="crossref_docx",
                 source_result=result,
-                document_summary={"summary": "Annealing changes hardness in nickel alloys."},
+                document_summary={"summary": "Annealing\x00 changes hardness in nickel alloys."},
             )
         ],
         comparison=None,
     )
+    assert "\x00" not in compact_text(result.title)
     links = build_links_report(run)
     deep = build_deep_report(run)
     assert "Отчет по релевантным ссылкам" in links
