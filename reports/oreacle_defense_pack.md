@@ -54,7 +54,8 @@ http://127.0.0.1:8501/
 ```
 
 Launcher проверяет импорт текущего GUI, останавливает stale Streamlit demo-процессы на порту 8501,
-пишет логи в `logs/streamlit_demo/` и делает healthcheck `http://127.0.0.1:8501/`.
+стартует clean server session, пишет логи в `logs/streamlit_demo/` и делает healthcheck `http://127.0.0.1:8501/`.
+На Windows Streamlit может держать parent/child Python-пару; это нормально, если healthcheck проходит.
 
 Настройки перед показом:
 

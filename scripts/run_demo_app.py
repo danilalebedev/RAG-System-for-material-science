@@ -180,7 +180,7 @@ def main() -> int:
         process = subprocess.Popen(command, cwd=root, stdout=stdout, stderr=stderr)
     health_url = f"http://127.0.0.1:{args.port}/"
     ok, detail = wait_for_http(health_url, timeout_seconds=args.health_timeout_seconds)
-    print(f"PID: {process.pid}")
+    print(f"Launcher PID: {process.pid}")
     print(f"Logs: {stdout_path} | {stderr_path}")
     if not ok:
         print(f"Healthcheck failed for {health_url}: {detail}")

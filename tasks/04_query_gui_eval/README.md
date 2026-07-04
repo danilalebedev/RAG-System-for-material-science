@@ -209,7 +209,8 @@ failing the run.
 - `scripts/search_web_literature.py` - CLI smoke/automation entrypoint.
 - `scripts/run_demo_app.py` - локальный запуск Streamlit на `0.0.0.0` с выводом local/LAN URL.
   Для защиты удобен режим `--background`: launcher проверяет импорт текущего `app.ui.demo_app`, останавливает
-  stale demo-процессы на выбранном порту, стартует один Streamlit process и пишет логи в `logs/streamlit_demo/`.
+  stale demo-процессы на выбранном порту, стартует clean Streamlit server session и пишет логи в `logs/streamlit_demo/`.
+  Streamlit на Windows может держать parent/child Python-пару; актуальный listener проверяется healthcheck по URL.
 - `scripts/demo_preflight.py` - быстрый readiness check перед защитой: RouterAI key configured flag,
   `routerai_bge_m3` manifests, Streamlit import/URL и offline search smoke по raw + summary streams.
 
