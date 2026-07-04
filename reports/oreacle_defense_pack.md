@@ -47,6 +47,15 @@ URL:
 http://127.0.0.1:8501/
 ```
 
+Устойчивый запуск перед показом:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_demo_app.py --background --address 127.0.0.1
+```
+
+Launcher проверяет импорт текущего GUI, останавливает stale Streamlit demo-процессы на порту 8501,
+пишет логи в `logs/streamlit_demo/` и делает healthcheck `http://127.0.0.1:8501/`.
+
 Настройки перед показом:
 
 - `RAG profile`: `routerai_bge_m3`, если indexes построены; иначе `yandex` или `default`.
