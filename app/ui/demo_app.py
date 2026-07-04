@@ -45,6 +45,13 @@ REQUEST_TYPES = {
     "Поиск методик": ["summary_rag", "raw_rag", "table_search", "graph_search"],
     "Поиск свойств": ["raw_rag", "summary_rag", "table_search", "graph_search"],
 }
+ROUTE_LABELS = {
+    "raw_rag": "Raw RAG",
+    "summary_rag": "Summary RAG",
+    "table_search": "Tables",
+    "graph_search": "Knowledge graph",
+    "web_search": "Web literature",
+}
 
 
 def display_value(value: Any, *, max_chars: int = 900) -> Any:
@@ -132,6 +139,91 @@ def confidence_label(run: Any | None, orchestration: Any | None) -> tuple[str, f
     if score >= 0.38:
         return "Средняя", score
     return "Низкая", score
+
+
+def plan_routes(orchestration: Any | None) -> list[str]:
+    if orchestration is None:
+        return []
+    plan = getattr(orchestration, "plan", None)
+    if plan is None:
+        return []
+    if isinstance(plan, dict):
+        return list(plan.get("routes") or [])
+    routes = getattr(plan, "routes", None)
+    if routes is not None:
+        return list(routes or [])
+    if hasattr(plan, "model_dump"):
+        return list((plan.model_dump(mode="json") or {}).get("routes") or [])
+    return []
+
+
+def workflow_summary_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    run = record.get("literature_run")
+    orchestration = record.get("orchestration")
+    answer = record.get("answer")
+    request_type = record.get("request_type") or "n/a"
+    routes = plan_routes(orchestration) or REQUEST_TYPES.get(request_type, [])
+    rows: list[dict[str, Any]] = [
+        {"Шаг": "Сценарий", "Что сделано": request_type, "Объем": ""},
+    ]
+    if routes:
+        rows.append(
+            {
+                "Шаг": "Маршрут",
+                "Что сделано": " -> ".join(ROUTE_LABELS.get(route, route) for route in routes),
+                "Объем": f"{len(routes)} streams",
+            }
+        )
+    if orchestration is not None:
+        context = orchestration.retrieved_context.as_dict()
+        local_counts = {
+            "raw": len(context.get("raw") or []),
+            "summary": len(context.get("summaries") or []),
+            "tables": len(context.get("tables") or []),
+            "graph": len(context.get("graph") or []),
+        }
+        rows.append(
+            {
+                "Шаг": "Локальный RAG",
+                "Что сделано": "raw chunks + summaries + tables + graph evidence",
+                "Объем": "; ".join(f"{name}: {count}" for name, count in local_counts.items()),
+            }
+        )
+        fallbacks = len(getattr(orchestration, "fallbacks", []) or [])
+        rows.append(
+            {
+                "Шаг": "Fallback-и",
+                "Что сделано": "нет критичных fallback-ов" if fallbacks == 0 else "есть fallback rows, см. Evidence",
+                "Объем": str(fallbacks),
+            }
+        )
+    local_matches = len(getattr(run, "local_matches", []) or []) if run is not None else 0
+    if local_matches:
+        rows.append({"Шаг": "Локальные публикации", "Что сделано": "найдены совпадения в локальной базе", "Объем": str(local_matches)})
+    web_results = list(getattr(run, "results", []) or []) if run is not None else []
+    if web_results:
+        sources = sorted({SEARCH_SOURCE_LABELS.get(result.source, result.source) for result in web_results if getattr(result, "source", None)})
+        rows.append(
+            {
+                "Шаг": "Web literature",
+                "Что сделано": "metadata search + ranking + confidence",
+                "Объем": f"{len(web_results)} источников" + (f"; {', '.join(sources[:5])}" if sources else ""),
+            }
+        )
+    deep_results = len(getattr(run, "deep_results", []) or []) if run is not None else 0
+    rows.append(
+        {
+            "Шаг": "Deep Search",
+            "Что сделано": "summary extraction выполнен" if deep_results else "не запускался или еще нет summaries",
+            "Объем": str(deep_results),
+        }
+    )
+    if answer is not None:
+        metadata = answer.metadata() if hasattr(answer, "metadata") else {}
+        provider = metadata.get("provider") or getattr(answer, "provider", None) or "RouterAI"
+        model = metadata.get("model") or getattr(answer, "model", None) or ""
+        rows.append({"Шаг": "Финальный ответ", "Что сделано": f"сформулирован через {provider}", "Объем": model})
+    return rows
 
 
 def _as_text_list(value: Any, *, limit: int = 8) -> list[str]:
@@ -476,6 +568,8 @@ def render_result(record: dict[str, Any]) -> None:
                 st.write(insights)
         elif orchestration is not None:
             st.text(orchestration.answer_draft)
+        st.markdown("**Как был собран ответ**")
+        render_table(workflow_summary_rows(record), empty_text="Маршрут ответа не найден.")
         st.markdown("**Как система искала**")
         render_table(search_context_rows(run, orchestration), empty_text="Поисковая формулировка не найдена.")
 
