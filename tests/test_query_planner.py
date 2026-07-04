@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from app.query.planner import plan_query
+
+
+def test_numeric_query_routes_to_tables_and_raw_rag() -> None:
+    plan = plan_query("nickel leaching at 80 C and 20% acid composition")
+    assert plan.intent == "extract_numbers"
+    assert "table_search" in plan.routes
+    assert "raw_rag" in plan.routes
+    assert plan.answer_format == "evidence_matrix"
+    assert plan.rewritten_queries.tables
+
+
+def test_comparison_query_routes_to_summary_raw_and_tables() -> None:
+    plan = plan_query("compare nickel leaching and flotation, which is better?")
+    assert plan.intent == "compare_methods"
+    assert "summary_rag" in plan.routes
+    assert "raw_rag" in plan.routes
+    assert "table_search" in plan.routes
+    assert plan.answer_format == "comparison_table"
+
+
+def test_graph_query_routes_to_graph_and_summary() -> None:
+    plan = plan_query("how is nickel related to autoclave leaching path in graph")
+    assert plan.intent == "graph_exploration"
+    assert "graph_search" in plan.routes
+    assert "summary_rag" in plan.routes
+    assert plan.rewritten_queries.graph
+
+
+def test_literature_query_routes_to_web_and_internal_rag() -> None:
+    plan = plan_query("fresh articles about nickel tailings recovery")
+    assert plan.intent == "web_literature_search"
+    assert "web_search" in plan.routes
+    assert "internal_rag" in plan.routes
+    assert plan.rewritten_queries.web
+
+
+def test_query_plan_json_has_required_stable_keys() -> None:
+    payload = plan_query("где написано про извлечение никеля из хвостов").model_dump(mode="json")
+    assert set(payload) == {
+        "original_query",
+        "intent",
+        "domain",
+        "entities",
+        "rewritten_queries",
+        "decomposed_questions",
+        "routes",
+        "answer_format",
+        "needs_clarification",
+        "clarifying_question",
+    }
+    assert set(payload["entities"]) == {"materials", "processes", "equipment", "properties", "experts", "facilities"}
+    assert set(payload["rewritten_queries"]) == {"raw_rag", "summary_rag", "graph", "tables", "web"}
+    assert payload["needs_clarification"] is False
+    assert payload["clarifying_question"] is None

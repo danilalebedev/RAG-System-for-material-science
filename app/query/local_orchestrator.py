@@ -9,9 +9,10 @@ from typing import Any, Iterable, Iterator
 
 from app.graph.search import load_graph, neighbors, paths_to_types, search_entities
 from app.query.csv_corpus import TableHit, format_table_context, search_tables
-from app.query.rewrite import QueryRewritePlan, deterministic_query_rewrite
+from app.query.planner import QueryPlan, plan_query
 from app.query.simple_corpus import EvidenceChunk, format_evidence_context, retrieve_chunks
 from app.settings import PROJECT_ROOT
+from app.web_search.keywords import extract_keywords
 
 
 TOKEN_RE = re.compile(r"[\w.+#%-]+", re.UNICODE)
@@ -403,7 +404,7 @@ def build_local_context(
 
 def build_brief(
     query: str,
-    plan: QueryRewritePlan,
+    plan: QueryPlan,
     raw_chunks: list[EvidenceChunk],
     summary_hits: list[SummaryHit],
     table_hits: list[TableHit],
@@ -414,7 +415,8 @@ def build_brief(
         "# Local Knowledge Brief",
         "",
         f"Query: {query}",
-        f"Corrected query: {plan.corrected_query}",
+        f"Intent: {plan.intent}",
+        f"Routes: {', '.join(plan.routes) if plan.routes else 'n/a'}",
         f"Retrieval streams: raw={len(raw_chunks)}, summary={len(summary_hits)}, tables={len(table_hits)}, graph={len(graph_hits)}",
         "",
         "## Best evidence",
@@ -445,6 +447,23 @@ def build_brief(
     return "\n".join(lines).strip() + "\n"
 
 
+def first_query(plan: QueryPlan, route: str, fallback: str) -> str:
+    queries = getattr(plan.rewritten_queries, route, []) or []
+    return queries[0] if queries else fallback
+
+
+def keywords_for_plan(plan: QueryPlan) -> list[str]:
+    entity_terms = (
+        plan.entities.materials
+        + plan.entities.processes
+        + plan.entities.equipment
+        + plan.entities.properties
+        + plan.entities.experts
+        + plan.entities.facilities
+    )
+    return list(dict.fromkeys(entity_terms + extract_keywords(plan.original_query)))
+
+
 def run_local_knowledge(
     query: str,
     *,
@@ -452,34 +471,37 @@ def run_local_knowledge(
     use_query_rewrite: bool = True,
 ) -> LocalKnowledgeBundle:
     config = config or default_config()
-    plan = deterministic_query_rewrite(query, materials_only=True) if use_query_rewrite else QueryRewritePlan(original_query=query, corrected_query=query)
-    retrieval_query = plan.corrected_query
+    plan = plan_query(query)
     warnings: list[str] = []
 
     raw_chunks: list[EvidenceChunk] = []
     if config.include_raw and config.chunks_path:
         if config.chunks_path.exists():
-            raw_chunks = retrieve_chunks(retrieval_query, config.chunks_path, top_k=config.top_k_raw, max_rows=config.max_scan_rows)
+            raw_query = first_query(plan, "raw_rag", plan.original_query)
+            raw_chunks = retrieve_chunks(raw_query, config.chunks_path, top_k=config.top_k_raw, max_rows=config.max_scan_rows)
         else:
             warnings.append(f"Raw chunks file is missing: {config.chunks_path}")
 
     summary_hits: list[SummaryHit] = []
     if config.include_summaries and config.publications_dir:
         if config.publications_dir.exists():
-            summary_hits = search_summaries(retrieval_query, config.publications_dir, top_k=config.top_k_summary)
+            summary_query = first_query(plan, "summary_rag", plan.original_query)
+            summary_hits = search_summaries(summary_query, config.publications_dir, top_k=config.top_k_summary)
         else:
             warnings.append(f"Publication summaries directory is missing: {config.publications_dir}")
 
     table_hits: list[TableHit] = []
     if config.include_tables:
-        table_hits, table_warnings = safe_table_search(retrieval_query, config)
+        table_query = first_query(plan, "tables", plan.original_query)
+        table_hits, table_warnings = safe_table_search(table_query, config)
         warnings.extend(table_warnings)
 
     graph_hits: list[dict[str, Any]] = []
     graph_neighbor_rows: list[dict[str, Any]] = []
     graph_path_rows: list[list[dict[str, Any]]] = []
     if config.include_graph:
-        graph_hits, graph_neighbor_rows, graph_path_rows, graph_warnings = graph_search(retrieval_query, config)
+        graph_query = first_query(plan, "graph", plan.original_query)
+        graph_hits, graph_neighbor_rows, graph_path_rows, graph_warnings = graph_search(graph_query, config)
         warnings.extend(graph_warnings)
 
     context = build_local_context(
@@ -495,7 +517,7 @@ def run_local_knowledge(
     return LocalKnowledgeBundle(
         query=query,
         query_plan=plan.model_dump(mode="json"),
-        keywords=plan.all_keywords,
+        keywords=keywords_for_plan(plan),
         raw_chunks=raw_chunks,
         summary_hits=summary_hits,
         table_hits=table_hits,

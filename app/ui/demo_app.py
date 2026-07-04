@@ -33,6 +33,7 @@ from app.query.cockpit import (  # noqa: E402
 )
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.local_orchestrator import run_local_knowledge  # noqa: E402
+from app.query.planner import plan_query  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
 from app.graph.search import load_graph, neighbors as graph_neighbors, paths_to_types, search_entities  # noqa: E402
@@ -70,6 +71,41 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
 
 
+def query_plan_search_queries(plan: dict[str, Any]) -> list[str]:
+    rewritten = plan.get("rewritten_queries") if isinstance(plan.get("rewritten_queries"), dict) else {}
+    values: list[str] = []
+    for key in ("raw_rag", "summary_rag", "graph", "tables", "web"):
+        for item in rewritten.get(key) or []:
+            if item and item not in values:
+                values.append(str(item))
+    for item in plan.get("search_queries") or []:
+        if item and item not in values:
+            values.append(str(item))
+    return values
+
+
+def query_plan_display_query(plan: dict[str, Any], fallback: str) -> str:
+    return str(plan.get("original_query") or plan.get("corrected_query") or fallback)
+
+
+def render_query_intelligence_plan(plan: dict[str, Any]) -> None:
+    if not plan:
+        st.info("No query plan available.")
+        return
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Intent", plan.get("intent") or "n/a")
+    col2.metric("Domain", plan.get("domain") or "n/a")
+    col3.metric("Answer", plan.get("answer_format") or "n/a")
+    col4.metric("Routes", len(plan.get("routes") or []))
+    routes = ", ".join(plan.get("routes") or [])
+    if routes:
+        st.write(f"**Routes:** {routes}")
+    if plan.get("needs_clarification"):
+        st.warning(plan.get("clarifying_question") or "Clarification is needed.")
+    with st.expander("Query Intelligence JSON", expanded=False):
+        st.json(plan)
+
+
 def render_local_knowledge_bundle(bundle: Any) -> None:
     st.subheader("Local Knowledge")
     col1, col2, col3, col4 = st.columns(4)
@@ -81,7 +117,7 @@ def render_local_knowledge_bundle(bundle: Any) -> None:
     if bundle.warnings:
         render_warnings(bundle.warnings)
 
-    tabs = st.tabs(["Raw", "Summaries", "Tables", "Graph", "Context", "Rewrite"])
+    tabs = st.tabs(["Raw", "Summaries", "Tables", "Graph", "Context", "Query Plan"])
     with tabs[0]:
         render_table(
             [
@@ -109,7 +145,7 @@ def render_local_knowledge_bundle(bundle: Any) -> None:
         st.text_area("Combined evidence context", value=bundle.context, height=420)
         st.download_button("Download local context", data=bundle.context, file_name="local_knowledge_context.md", mime="text/markdown")
     with tabs[5]:
-        st.json(bundle.query_plan)
+        render_query_intelligence_plan(bundle.query_plan)
 
 
 def render_local_world_cards(rows: list[dict[str, Any]]) -> None:
@@ -339,6 +375,9 @@ def query_preview_run(query: str, *, materials_only: bool) -> Any:
 
 def render_pre_search_decomposer(query: str, *, materials_only: bool) -> dict[str, str]:
     preview = query_preview_run(query, materials_only=materials_only)
+    intelligence_plan = plan_query(query)
+    st.subheader("Query Intelligence")
+    render_query_intelligence_plan(intelligence_plan.model_dump(mode="json"))
     rows = query_decomposition(preview)
     st.subheader("Query Decomposer")
     st.caption("Отредактируйте структуру запроса до запуска поиска. Эти поля добавятся к поисковой формулировке для web-search и будущего RAG.")
@@ -417,8 +456,8 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
             "- score также растет за квартиль журнала, если он известен: Q1 +5, Q2 +3, Q3 +1.5, Q4 +0.5;\n"
             "- при `Materials science only` остаются только статьи с domain-сигналами: materials, metallurgy, alloy, ore, nickel, copper, flotation, leaching и т.п."
         )
-    with st.expander("Технический JSON rewrite plan"):
-        st.json(run.query_plan or {})
+    st.subheader("Query Intelligence")
+    render_query_intelligence_plan(run.query_plan or {})
     render_warnings(run.warnings)
     if run.comparison and run.comparison.gaps:
         st.write("Gaps")
@@ -434,8 +473,8 @@ def download_path_button(label: str, path: Any, *, file_name: str, mime: str) ->
 def render_run(run: Any) -> None:
     st.session_state["last_run"] = run
     tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Local Knowledge", "Knowledge Graph", "Графики", "Отчет"])
-    corrected_query = run.query_plan.get("corrected_query") if run.query_plan else run.request.query
-    search_queries = (run.query_plan or {}).get("search_queries") or []
+    corrected_query = query_plan_display_query(run.query_plan or {}, run.request.query)
+    search_queries = query_plan_search_queries(run.query_plan or {})
 
     with tabs[0]:
         render_cockpit(run, corrected_query, search_queries)
