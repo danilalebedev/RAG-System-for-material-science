@@ -134,22 +134,60 @@ def confidence_label(run: Any | None, orchestration: Any | None) -> tuple[str, f
     return "Низкая", score
 
 
-def rewritten_query_rows(run: Any | None, orchestration: Any | None) -> list[dict[str, Any]]:
+def _as_text_list(value: Any, *, limit: int = 8) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, str):
+        return [repair_mojibake(value)]
+    if isinstance(value, dict):
+        rows: list[str] = []
+        for item in value.values():
+            rows.extend(_as_text_list(item, limit=limit))
+            if len(rows) >= limit:
+                break
+        return list(dict.fromkeys(rows))[:limit]
+    if isinstance(value, (list, tuple, set)):
+        rows = []
+        for item in value:
+            rows.extend(_as_text_list(item, limit=limit))
+            if len(rows) >= limit:
+                break
+        return list(dict.fromkeys(rows))[:limit]
+    return [repair_mojibake(value)]
+
+
+def search_context_rows(run: Any | None, orchestration: Any | None) -> list[dict[str, Any]]:
     plan = getattr(run, "query_plan", None) if run else None
     orchestration_rewrite = getattr(orchestration, "query_rewrite", None) if orchestration is not None else None
     if not plan and orchestration is not None:
         plan = orchestration.plan.model_dump(mode="json")
     plan = plan or {}
     rewrite = plan.get("llm_rewrite") if isinstance(plan.get("llm_rewrite"), dict) else orchestration_rewrite or {}
-    rows: list[dict[str, Any]] = []
+    original_query = getattr(getattr(run, "request", None), "query", None) or plan.get("original_query") or plan.get("original_user_query")
+    corrected_query = rewrite.get("corrected_query") or plan.get("corrected_query") or original_query
+    web_queries = list(dict.fromkeys(_as_text_list(rewrite.get("search_queries")) + _as_text_list(plan.get("web_search_queries"))))
+    local_queries = list(
+        dict.fromkeys(
+            _as_text_list(plan.get("internal_search_queries"))
+            + _as_text_list((plan.get("rewritten_queries") or {}).get("raw_rag") if isinstance(plan.get("rewritten_queries"), dict) else None)
+            + _as_text_list((plan.get("rewritten_queries") or {}).get("summary_rag") if isinstance(plan.get("rewritten_queries"), dict) else None)
+        )
+    )
+    keywords = _as_text_list(getattr(run, "keywords", None), limit=16)
+    if not keywords and isinstance(plan.get("entities"), dict):
+        keywords = _as_text_list(plan.get("entities"), limit=16)
+    rows = [
+        {"Что используется": "Исходный запрос", "Значение": original_query or "n/a"},
+        {"Что используется": "Поисковая формулировка", "Значение": corrected_query or "n/a"},
+    ]
+    if keywords:
+        rows.append({"Что используется": "Ключевые слова", "Значение": ", ".join(keywords[:16])})
+    if web_queries:
+        rows.append({"Что используется": "Web-поиск", "Значение": " | ".join(web_queries[:5])})
+    if local_queries:
+        rows.append({"Что используется": "Локальный RAG", "Значение": " | ".join(local_queries[:5])})
     if rewrite:
-        rows.append({"stage": "corrected", "query": rewrite.get("corrected_query"), "llm": rewrite.get("rewrite_used_llm")})
-        for query in rewrite.get("search_queries") or []:
-            rows.append({"stage": "search_variant", "query": query, "llm": rewrite.get("rewrite_used_llm")})
-    rewritten = plan.get("rewritten_queries") if isinstance(plan.get("rewritten_queries"), dict) else {}
-    for route, queries in rewritten.items():
-        for query in queries or []:
-            rows.append({"stage": route, "query": query, "llm": False})
+        rows.append({"Что используется": "Переформулировка LLM", "Значение": "да" if rewrite.get("rewrite_used_llm") else "нет, deterministic fallback"})
     return rows
 
 
@@ -428,9 +466,9 @@ def render_result(record: dict[str, Any]) -> None:
             st.markdown(compact_text(getattr(answer, "text", ""), 6000))
             render_answer_section_exports(record)
             metadata = answer.metadata() if hasattr(answer, "metadata") else {}
-            st.markdown("**RouterAI budget / usage**")
-            render_table([routerai_budget_summary(answer)], empty_text="Нет RouterAI usage metadata.")
-            render_table([metadata], empty_text="Нет metadata по LLM.")
+            with st.expander("Диагностика RouterAI", expanded=False):
+                render_table([routerai_budget_summary(answer)], empty_text="Нет RouterAI usage metadata.")
+                render_table([metadata], empty_text="Нет metadata по LLM.")
         elif run is not None:
             st.write(run_overall_summary(run))
             insights = comparison_insights(run)
@@ -438,10 +476,8 @@ def render_result(record: dict[str, Any]) -> None:
                 st.write(insights)
         elif orchestration is not None:
             st.text(orchestration.answer_draft)
-        st.markdown("**Ключевые слова и переформулировки**")
-        if run is not None:
-            st.write(", ".join(getattr(run, "keywords", []) or []) or "n/a")
-        render_table(rewritten_query_rows(run, orchestration), empty_text="Переформулировки не найдены.")
+        st.markdown("**Как система искала**")
+        render_table(search_context_rows(run, orchestration), empty_text="Поисковая формулировка не найдена.")
 
     with tabs[1]:
         render_section_exports(run, "sources", "источники")
