@@ -402,17 +402,16 @@ Build/validation commands used:
 .\.venv\Scripts\python.exe scripts\validate_rag_index.py `
   --profile routerai_bge_m3 `
   --mode hybrid `
-  --allow-network `
   --top-k 5 `
+  --sample-size 2048 `
   --report-json data\indexes\routerai_bge_m3_validation_report.json `
   --results-jsonl data\indexes\routerai_bge_m3_validation_results.jsonl
 
 .\.venv\Scripts\python.exe scripts\search_cli.py `
-  "никелевые сплавы термообработка твердость" `
+  "никелевые концентраты обжиг выщелачивание" `
   --profile routerai_bge_m3 `
   --top-k 5 `
-  --summary-top-k 5 `
-  --json
+  --offline
 ```
 
 Observed validation:
@@ -420,8 +419,11 @@ Observed validation:
 - `validate_rag_index.py` status: `pass`;
 - issue count: `0`;
 - failed queries: empty;
+- benchmark: 13/13 search cases passed;
 - CLI smoke returned all expected retrieval streams: `raw_dense`, `raw_lexical`, `summary_lexical`,
-  `document_summary_vector`, `procedure_summary_vector`.
+  `document_summary_vector`, `procedure_summary_vector`;
+- `scripts/search_cli.py` configures stdout/stderr as UTF-8 so Windows console output does not crash on symbols
+  from retrieved source text, such as `≈`.
 
 Important constraints:
 

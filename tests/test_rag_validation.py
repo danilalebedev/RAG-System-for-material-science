@@ -10,6 +10,15 @@ from app.index.embeddings import LocalHashEmbeddingClient
 from app.index.lexical import build_lexical_index
 from app.index.vector_store import save_vector_index
 from app.rag.validation import SearchCase, run_validation
+from scripts import search_cli
+
+
+class FakeTextStream:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def reconfigure(self, **kwargs: str) -> None:
+        self.calls.append(kwargs)
 
 
 def write_retrieval_config(path: Path, chunks_path: Path, index_dir: Path, lexical_dir: Path) -> None:
@@ -200,3 +209,15 @@ def test_validation_agent_hybrid_offline_degrades_to_lexical(tmp_path: Path) -> 
 
     assert report["status"] == "pass"
     assert report["search_cases"][0]["diagnostics"]["dense_status"] == "skipped_offline"
+
+
+def test_search_cli_configures_utf8_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = FakeTextStream()
+    stderr = FakeTextStream()
+    monkeypatch.setattr(search_cli.sys, "stdout", stdout)
+    monkeypatch.setattr(search_cli.sys, "stderr", stderr)
+
+    search_cli.configure_stdio()
+
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "replace"}]

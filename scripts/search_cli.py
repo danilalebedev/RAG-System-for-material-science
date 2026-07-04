@@ -16,6 +16,12 @@ from app.index.vector_store import load_manifest  # noqa: E402
 from app.rag.retrieval import hybrid_search  # noqa: E402
 
 
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Search parsed source chunks through local RAG indexes.")
     parser.add_argument("query")
@@ -56,6 +62,7 @@ def resolve_project_path(root: Path, value: str | None, fallback: str) -> Path:
 
 
 def main() -> int:
+    configure_stdio()
     args = parse_args()
     root = Path(__file__).resolve().parents[1]
     load_dotenv(root / ".env", encoding="utf-8-sig")
