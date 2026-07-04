@@ -153,6 +153,15 @@ def rewritten_query_rows(run: Any | None, orchestration: Any | None) -> list[dic
     return rows
 
 
+def dot_label(value: Any, max_chars: int = 80) -> str:
+    if isinstance(value, list):
+        text = ", ".join(compact_text(item, max_chars) for item in value[:4] if compact_text(item, max_chars))
+    else:
+        text = compact_text(value, max_chars)
+    text = text or "n/a"
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def graph_dot_from_orchestration(orchestration: Any | None) -> str:
     rows = orchestration_rows(orchestration, "graph")
     if not rows:
@@ -164,12 +173,12 @@ def graph_dot_from_orchestration(orchestration: Any | None) -> str:
     ]
     for row in rows[:30]:
         if row.get("kind") == "neighbor":
-            left = compact_text(row.get("relation") or "relation", 50)
-            right = compact_text(row.get("label") or row.get("node_id"), 80)
+            left = dot_label(row.get("relation") or "relation", 50)
+            right = dot_label(row.get("label") or row.get("node_id"), 80)
             lines.append(f'"{left}" -> "{right}";')
         elif row.get("kind") == "entity":
-            label = compact_text(row.get("label") or row.get("node_id"), 80)
-            node_type = compact_text(row.get("type") or "entity", 40)
+            label = dot_label(row.get("label") or row.get("node_id"), 80)
+            node_type = dot_label(row.get("type") or "entity", 40)
             lines.append(f'"{node_type}" -> "{label}";')
     lines.append("}")
     return "\n".join(lines)
@@ -196,14 +205,49 @@ def method_graph_dot(run: Any | None) -> str:
         "node [shape=box, style=\"rounded,filled\", fontname=\"Arial\", color=\"#c8cdd6\"];",
     ]
     for row in rows[:40]:
-        material = compact_text(row.get("material") or "material", 60)
-        method = compact_text(row.get("method") or row.get("synthesis_or_process_method") or "method", 70)
-        scope = compact_text(row.get("scope") or "source", 40)
-        title = compact_text(row.get("title") or row.get("doc_id") or scope, 80)
+        material = dot_label(row.get("material") or "material", 60)
+        method = dot_label(row.get("method") or row.get("synthesis_or_process_method") or "method", 70)
+        scope = dot_label(row.get("scope") or "source", 40)
+        title = dot_label(row.get("title") or row.get("doc_id") or scope, 80)
         lines.append(f'"Material: {material}" -> "Method: {method}" [label="{scope}"];')
         lines.append(f'"Method: {method}" -> "Source: {title}";')
     lines.append("}")
     return "\n".join(lines)
+
+
+def property_graph_dot(run: Any | None, orchestration: Any | None) -> str:
+    rows = property_rows(run, orchestration)
+    if not rows:
+        return "digraph G { rankdir=LR; empty [label=\"Нет данных по свойствам\"]; }"
+    lines = [
+        "digraph G {",
+        "rankdir=LR;",
+        "node [shape=box, style=\"rounded,filled\", fontname=\"Arial\", color=\"#b7c7d8\", fillcolor=\"#eef6ff\"];",
+    ]
+    for row in rows[:40]:
+        scope = dot_label(row.get("scope") or "source", 40)
+        material = dot_label(row.get("material") or "material", 60)
+        output = dot_label(row.get("outputs") or "property", 80)
+        numeric = dot_label(row.get("numeric_results") or "numeric result", 80)
+        evidence = dot_label(row.get("evidence") or scope, 80)
+        lines.append(f'"Material: {material}" -> "Property: {output}" [label="{scope}"];')
+        if numeric != "numeric result":
+            lines.append(f'"Property: {output}" -> "Value/range: {numeric}";')
+        lines.append(f'"Property: {output}" -> "Source: {evidence}";')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def comparison_graph_dot(run: Any | None, orchestration: Any | None, request_type: str | None) -> str:
+    if request_type and "свойств" in request_type.casefold():
+        return property_graph_dot(run, orchestration)
+    return method_graph_dot(run)
+
+
+def comparison_graph_title(request_type: str | None) -> str:
+    if request_type and "свойств" in request_type.casefold():
+        return "**Свойства: local vs web**"
+    return "**Методики: local vs web**"
 
 
 def property_rows(run: Any | None, orchestration: Any | None) -> list[dict[str, Any]]:
@@ -369,6 +413,7 @@ def render_result(record: dict[str, Any]) -> None:
     run = record.get("literature_run")
     orchestration = record.get("orchestration")
     answer = record.get("answer")
+    request_type = record.get("request_type")
     confidence_text, confidence_score = confidence_label(run, orchestration)
 
     cols = st.columns(4)
@@ -447,8 +492,8 @@ def render_result(record: dict[str, Any]) -> None:
             st.markdown("**Knowledge graph**")
             st.graphviz_chart(knowledge_graph_dot(run, orchestration), use_container_width=True)
         with col_b:
-            st.markdown("**Методики: local vs web**")
-            st.graphviz_chart(method_graph_dot(run), use_container_width=True)
+            st.markdown(comparison_graph_title(request_type))
+            st.graphviz_chart(comparison_graph_dot(run, orchestration, request_type), use_container_width=True)
 
     with tabs[5]:
         render_section_exports(run, "charts", "графики")

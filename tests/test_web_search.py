@@ -51,7 +51,7 @@ from app.query.reports import (
     run_overall_summary,
 )
 from app.query.rewrite import deterministic_query_rewrite
-from app.ui.demo_app import knowledge_graph_dot, table_df
+from app.ui.demo_app import comparison_graph_dot, comparison_graph_title, knowledge_graph_dot, table_df
 from app.web_search.open_access import OpenAccessResolver
 from app.web_search.resource_links import build_resource_links
 from app.web_search.schemas import DeepSearchResult, LiteratureSearchRequest, LiteratureSearchResult, LiteratureSearchRun, MethodComparison
@@ -763,6 +763,7 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
                 "conditions": [{"temperature": "900 C"}],
                 "equipment": ["tube furnace"],
                 "outputs": ["hardness"],
+                "numeric_results": ["220 HV"],
             },
             {
                 "scope": "web",
@@ -772,6 +773,7 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
                 "conditions": [{"temperature": "950 C"}],
                 "equipment": ["furnace"],
                 "outputs": ["ductility"],
+                "numeric_results": ["18% elongation"],
             },
         ],
     )
@@ -816,6 +818,14 @@ def test_cockpit_builds_query_slots_metrics_and_brief() -> None:
     assert "Publication: Nickel alloy annealing hardness" in graph_markdown
     graph_dot = knowledge_graph_dot(run, None)
     assert "Publication: Nickel alloy annealing hardness" in graph_dot
+    property_graph = comparison_graph_dot(run, None, "Поиск свойств")
+    assert comparison_graph_title("Поиск свойств") == "**Свойства: local vs web**"
+    assert "Property:" in property_graph
+    assert "hardness" in property_graph
+    assert "ductility" in property_graph
+    assert "Value/range:" in property_graph
+    method_graph = comparison_graph_dot(run, None, "Поиск методик")
+    assert "Method: annealing" in method_graph
     property_rows_for_report = property_report_rows_from_run(run)
     assert property_rows_for_report
     property_markdown = property_report_markdown("Свойства", run.request.query, property_rows_for_report)

@@ -302,7 +302,8 @@ Streamlit-приложении.
 - `Сравнение`: confirmed/local-only/web-only методики, различающиеся условия и property/numeric rows.
   Для property/numeric rows есть отдельная секционная выгрузка `properties_report.md/.pdf/.docx`.
 - `Evidence`: Raw RAG, Summary RAG, Tables и fallbacks.
-- `Графы`: local knowledge graph и local-vs-web method graph.
+- `Графы`: local knowledge graph и mode-aware comparison graph. Для `Поиск методик` показывается
+  local-vs-web graph методик/режимов обработки, для `Поиск свойств` - graph свойств и численных диапазонов.
   Если local graph route не вернул rows или открыт чистый literature run, GUI использует fallback mini graph
   из web/local/deep/comparison evidence, чтобы вкладка не была пустой.
 - `Графики`: распределение публикаций по годам и базам данных.
