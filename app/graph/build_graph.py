@@ -19,6 +19,41 @@ ENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "Facility": ("facilities", "facilities_or_geography", "geography", "deposits", "organizations"),
     "Expert": ("experts", "authors"),
 }
+LIGHTWEIGHT_ENTITY_PATTERNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "Material": (
+        ("никелевая руда", "никелевая руда"),
+        ("никелевые руды", "никелевая руда"),
+        ("nickel ore", "nickel ore"),
+        ("nickel ores", "nickel ore"),
+        ("ni ore", "Ni ore"),
+        ("nickel", "nickel"),
+        ("никел", "никель"),
+        ("cobalt", "cobalt"),
+        ("кобальт", "кобальт"),
+        ("copper", "copper"),
+        ("мед", "медь"),
+    ),
+    "Process": (
+        ("leaching", "leaching"),
+        ("выщелач", "выщелачивание"),
+        ("flotation", "flotation"),
+        ("флотац", "флотация"),
+        ("smelting", "smelting"),
+        ("плав", "плавка"),
+        ("roasting", "roasting"),
+        ("обжиг", "обжиг"),
+    ),
+    "Property": (
+        ("recovery", "recovery"),
+        ("извлеч", "извлечение"),
+        ("composition", "composition"),
+        ("состав", "состав"),
+        ("temperature", "temperature"),
+        ("температур", "температура"),
+        ("selectivity", "selectivity"),
+        ("селектив", "селективность"),
+    ),
+}
 
 
 @dataclass
@@ -180,6 +215,31 @@ def add_edge(
     )
 
 
+def lightweight_entities_from_text(text: Any) -> dict[str, list[str]]:
+    normalized = normalize_key(text)
+    found: dict[str, list[str]] = {}
+    for node_type, patterns in LIGHTWEIGHT_ENTITY_PATTERNS.items():
+        values = [label for pattern, label in patterns if pattern in normalized]
+        if values:
+            found[node_type] = unique(values, limit=12)
+    return found
+
+
+def add_lightweight_text_entities(
+    nodes: dict[str, GraphNode],
+    edges: dict[str, GraphEdge],
+    text: Any,
+    pub_node: str | None,
+    *,
+    doc_id: str = "",
+    publication_id: str = "",
+) -> None:
+    for node_type, labels in lightweight_entities_from_text(text).items():
+        for label in labels:
+            nid = add_node(nodes, node_type, label, doc_id=doc_id, publication_id=publication_id, metadata={"source": "lightweight_text"})
+            add_edge(edges, nid, "mentioned_in", pub_node, doc_id=doc_id, publication_id=publication_id)
+
+
 def extract_evidence_ids(value: Iterable[Any]) -> list[str]:
     ids: list[str] = []
     for item in value or []:
@@ -296,6 +356,14 @@ def build_publication_nodes(
             },
         )
         doc_to_publication_node[doc_id] = pid
+        add_lightweight_text_entities(
+            nodes,
+            edges,
+            " ".join(str(value or "") for value in (label, row.get("abstract"), row.get("source_path"), row.get("file_name"))),
+            pid,
+            doc_id=doc_id,
+            publication_id=publication_id,
+        )
         for expert in flatten_values(row.get("authors")):
             expert_id = add_node(nodes, "Expert", expert, doc_id=doc_id, publication_id=publication_id)
             add_edge(edges, expert_id, "authored", pid, doc_id=doc_id, publication_id=publication_id, confidence=confidence(row))
@@ -417,6 +485,13 @@ def build_table_nodes(
             metadata={"row_count": row.get("row_count"), "local_path": row.get("local_path"), "text_preview": str(row.get("text") or "")[:500]},
         )
         add_edge(edges, tid, "described_in", pub_node, doc_id=doc_id)
+        add_lightweight_text_entities(
+            nodes,
+            edges,
+            " ".join(str(value or "") for value in (label, row.get("text"), row.get("local_path"))),
+            pub_node,
+            doc_id=doc_id,
+        )
     for row in iter_jsonl(documents_path):
         doc_id = str(row.get("doc_id") or "")
         metadata = parse_metadata(row.get("metadata_json"))
@@ -438,6 +513,13 @@ def build_table_nodes(
                 },
             )
             add_edge(edges, tid, "described_in", doc_to_publication_node.get(doc_id), doc_id=doc_id)
+            add_lightweight_text_entities(
+                nodes,
+                edges,
+                " ".join(str(value or "") for value in (label, sheet.get("csv_path"))),
+                doc_to_publication_node.get(doc_id),
+                doc_id=doc_id,
+            )
 
 
 def parse_metadata(value: Any) -> dict[str, Any]:
@@ -512,4 +594,3 @@ def build_graph(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
-

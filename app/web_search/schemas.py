@@ -68,6 +68,7 @@ class LiteratureSearchResult(BaseModel):
     score: float = 0.0
     keyword_hits: list[str] = Field(default_factory=list)
     external_ids: dict[str, str] = Field(default_factory=dict)
+    open_access: dict[str, Any] = Field(default_factory=dict)
     fetched_at: str = Field(default_factory=utc_now)
     raw: dict[str, Any] = Field(default_factory=dict)
 

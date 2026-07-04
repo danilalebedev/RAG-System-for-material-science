@@ -47,6 +47,7 @@ class QueryOrchestrationResult:
     evidence: list[dict[str, Any]]
     answer_draft: str
     fallbacks: list[dict[str, Any]] = field(default_factory=list)
+    local_diagnostics: dict[str, Any] = field(default_factory=dict)
     web_run: LiteratureSearchRun | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -56,6 +57,7 @@ class QueryOrchestrationResult:
             "evidence": self.evidence,
             "answer_draft": self.answer_draft,
             "fallbacks": self.fallbacks,
+            "local_diagnostics": self.local_diagnostics,
         }
 
 
@@ -89,6 +91,19 @@ def local_config_for_routes(plan: QueryPlan, *, project_root: Path) -> LocalKnow
 
 def route_unavailable(route: str, reason: str) -> dict[str, Any]:
     return {"route": route, "status": "unavailable", "reason": reason}
+
+
+def local_diagnostics(config: LocalKnowledgeConfig, plan: QueryPlan) -> dict[str, Any]:
+    return {
+        "chunks_jsonl_found": bool(config.chunks_path and config.chunks_path.exists()),
+        "documents_jsonl_found": bool(config.documents_path and config.documents_path.exists()),
+        "tables_jsonl_found": bool(config.tables_path and config.tables_path.exists()),
+        "graph_nodes_found": bool(config.graph_nodes_path and config.graph_nodes_path.exists()),
+        "graph_edges_found": bool(config.graph_edges_path and config.graph_edges_path.exists()),
+        "actual_local_query": (getattr(plan, "internal_search_queries", []) or [plan.original_query])[0],
+        "actual_web_query": (getattr(plan, "web_search_queries", []) or [plan.original_query])[0],
+        "called_routes": list(plan.routes),
+    }
 
 
 def raw_rows(chunks: list[EvidenceChunk]) -> list[dict[str, Any]]:
@@ -270,7 +285,7 @@ def run_web_route(
     if not include_web:
         fallbacks.append(route_unavailable("web_search", "web route selected by plan, but include_web=False"))
         return [], None
-    web_query = (plan.rewritten_queries.web or [plan.original_query])[0]
+    web_query = (getattr(plan, "web_search_queries", []) or plan.rewritten_queries.web or [plan.original_query])[0]
     request = LiteratureSearchRequest(
         query=web_query,
         top_k=web_top_k,
@@ -302,6 +317,8 @@ def run_query_orchestration(
             if route not in routes_in_order:
                 routes_in_order.append(route)
         plan = plan.model_copy(update={"routes": routes_in_order})
+    if include_web and "web_search" not in plan.routes:
+        plan = plan.model_copy(update={"routes": [*plan.routes, "web_search"]})
     config = local_config_for_routes(plan, project_root=project_root)
     routes: set[RouteName] = set(plan.routes)
     use_internal = "internal_rag" in routes
@@ -337,5 +354,6 @@ def run_query_orchestration(
         evidence=evidence,
         answer_draft=build_answer_draft(plan, context, evidence, fallbacks),
         fallbacks=fallbacks,
+        local_diagnostics=local_diagnostics(config, plan),
         web_run=web_run,
     )
