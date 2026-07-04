@@ -96,6 +96,32 @@ SOURCE_REGISTRY: tuple[MarketSource, ...] = (
     ),
 )
 
+REQUIRED_PRODUCTION_SOURCE_IDS: tuple[str, ...] = (
+    "rosstat_fedstat_emiss",
+    "worldsteel_data",
+    "international_aluminium_institute",
+    "usgs_mcs",
+    "nornickel_reports",
+    "rusal_reports",
+    "severstal_reports",
+    "nlmk_reports",
+    "mmk_reports",
+    "metalloinvest_reports",
+)
+
+SOURCE_FAMILY_LABELS: dict[str, str] = {
+    "rosstat_fedstat_emiss": "Fedstat / Rosstat / EMISS",
+    "worldsteel_data": "World Steel Association",
+    "international_aluminium_institute": "International Aluminium Institute",
+    "usgs_mcs": "USGS Mineral Commodity Summaries",
+    "nornickel_reports": "Nornickel reports / interactive database",
+    "rusal_reports": "RUSAL reports",
+    "severstal_reports": "Severstal reports",
+    "nlmk_reports": "NLMK reports",
+    "mmk_reports": "MMK reports",
+    "metalloinvest_reports": "Metalloinvest reports",
+}
+
 
 DEFAULT_COMMODITIES: list[Commodity] = ["nickel", "copper", "palladium", "platinum"]
 

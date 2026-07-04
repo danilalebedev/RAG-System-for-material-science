@@ -7,6 +7,30 @@ from app.market.schemas import MarketDataRow, MarketSource, SourceStatus
 
 TODAY = date.today().isoformat()
 
+LIVE_PARSER_PLACEHOLDERS: dict[str, str] = {
+    "rosstat_fedstat_emiss": "parse_rosstat_fedstat_emiss_placeholder",
+    "worldsteel_data": "parse_worldsteel_data_placeholder",
+    "international_aluminium_institute": "parse_international_aluminium_institute_placeholder",
+    "usgs_mcs": "parse_usgs_mcs_placeholder",
+    "nornickel_reports": "parse_nornickel_reports_or_interactive_database_placeholder",
+    "rusal_reports": "parse_rusal_reports_placeholder",
+    "severstal_reports": "parse_severstal_reports_placeholder",
+    "nlmk_reports": "parse_nlmk_reports_placeholder",
+    "mmk_reports": "parse_mmk_reports_placeholder",
+    "metalloinvest_reports": "parse_metalloinvest_reports_placeholder",
+}
+
+
+def live_parser_placeholder(source_id: str) -> str | None:
+    return LIVE_PARSER_PLACEHOLDERS.get(source_id)
+
+
+def parse_live_source_placeholder(source: MarketSource) -> list[MarketDataRow]:
+    parser_name = live_parser_placeholder(source.source_id) or "unregistered_live_parser_placeholder"
+    raise NotImplementedError(
+        f"{parser_name} is a future live parser stub. Demo-safe fixtures are used instead of fragile scraping."
+    )
+
 
 def fixture_rows() -> list[MarketDataRow]:
     return [

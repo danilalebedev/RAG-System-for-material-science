@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+
 import pandas as pd
 
 from app.market.charts import prepare_market_chart_df
 from app.market.normalization import normalize_unit_value
-from app.market.radar import detect_market_query, run_market_radar
+from app.market.parsers import LIVE_PARSER_PLACEHOLDERS
+from app.market.radar import detect_market_query, production_dashboard_rows, run_market_radar
+from app.market.sources import REQUIRED_PRODUCTION_SOURCE_IDS, SOURCE_REGISTRY
 
 
 def test_nornickel_latest_production_query_returns_core_metals() -> None:
@@ -86,3 +92,53 @@ def test_market_chart_empty_data_is_empty_dataframe() -> None:
     chart_df = prepare_market_chart_df([], index="period", columns=["entity", "commodity"])
 
     assert chart_df.empty
+
+
+def test_production_dashboard_schema_rows_are_dashboard_ready() -> None:
+    result = run_market_radar("How much nickel did Nornickel produce in the latest period?")
+    rows = production_dashboard_rows(result.production_rows)
+
+    assert rows
+    for row in rows:
+        assert set(row) == {
+            "commodity",
+            "producer_or_country",
+            "period",
+            "value",
+            "unit",
+            "source_url",
+            "confidence",
+        }
+        assert row["commodity"]
+        assert row["producer_or_country"]
+        assert row["period"]
+        assert row["unit"]
+        assert row["source_url"]
+        assert row["confidence"] in {"high", "medium", "low"}
+
+
+def test_source_registry_contains_required_production_source_families() -> None:
+    source_ids = {source.source_id for source in SOURCE_REGISTRY}
+
+    assert set(REQUIRED_PRODUCTION_SOURCE_IDS).issubset(source_ids)
+    assert set(REQUIRED_PRODUCTION_SOURCE_IDS).issubset(LIVE_PARSER_PLACEHOLDERS)
+
+
+def test_run_production_radar_wrapper_outputs_dashboard_rows() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_production_radar.py",
+            "How much nickel did Nornickel produce?",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["agent"] == "Agent F - Business / Production Radar"
+    assert payload["dashboard_rows"]
+    assert payload["dashboard_rows"][0]["commodity"] == "nickel"
+    assert "producer_or_country" in payload["dashboard_rows"][0]

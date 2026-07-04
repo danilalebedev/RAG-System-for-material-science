@@ -239,3 +239,18 @@ def run_market_radar(query: str, *, demo_mode: bool = True) -> MarketRadarResult
         internal_knowledge_terms=_internal_terms(detected),
         charts=_build_charts(matched_rows),
     )
+
+
+def production_dashboard_rows(rows: Iterable[MarketDataRow]) -> list[dict[str, object]]:
+    return [
+        {
+            "commodity": row.commodity,
+            "producer_or_country": row.company_or_country,
+            "period": row.period,
+            "value": row.value,
+            "unit": row.unit,
+            "source_url": row.source_url,
+            "confidence": row.confidence,
+        }
+        for row in rows
+    ]

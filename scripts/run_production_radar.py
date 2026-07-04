@@ -13,9 +13,11 @@ from app.market.radar import production_dashboard_rows, run_market_radar  # noqa
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Oreacle Market Radar for a public production-data query.")
-    parser.add_argument("query", nargs="+", help="Market intelligence query.")
-    parser.add_argument("--json", action="store_true", help="Print full structured JSON.")
+    parser = argparse.ArgumentParser(
+        description="Run Agent F / Production Radar. Thin alias for Oreacle Market Radar."
+    )
+    parser.add_argument("query", nargs="+", help="Production intelligence query.")
+    parser.add_argument("--json", action="store_true", help="Print full structured Market Radar JSON.")
     parser.add_argument("--no-demo-fixtures", action="store_true", help="Disable built-in fallback fixtures.")
     return parser.parse_args()
 
@@ -36,6 +38,7 @@ def main() -> None:
         return
 
     compact = {
+        "agent": "Agent F - Business / Production Radar",
         "detected": payload["detected"],
         "selected_sources": [
             {
@@ -45,8 +48,8 @@ def main() -> None:
             }
             for item in payload["selected_sources"]
         ],
-        "production_rows": payload["production_rows"],
         "dashboard_rows": production_dashboard_rows(result.production_rows),
+        "production_rows": payload["production_rows"],
         "market_summary": payload["market_summary"],
         "source_status": payload["source_status"],
         "missing_data": payload["missing_data"],
