@@ -34,6 +34,7 @@ from app.query.cockpit import (
     query_decomposition,
 )
 from app.query.reports import (
+    build_answer_exports,
     build_deep_report,
     build_docx_report,
     build_executive_brief_report,
@@ -929,7 +930,16 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     assert exports["docx"].exists()
     assert exports["markdown"].read_text(encoding="utf-8")
 
-    archive = build_run_archive(run, run_dir / "run_artifacts.zip", project_root=tmp_path)
+    answer = LLMResponse(text="RouterAI synthesized literature answer.", provider="routerai", model="test", status="primary", used_evidence=True)
+    answer_exports = build_answer_exports(run_dir / "answer_report", query="nickel alloy annealing", answer=answer, run=run)
+    assert answer_exports["pdf"].exists()
+    assert answer_exports["docx"].exists()
+    assert answer_exports["json"].exists()
+    answer_markdown = answer_exports["markdown"].read_text(encoding="utf-8")
+    assert "RouterAI synthesized literature answer" in answer_markdown
+    assert "https://example.org/paper" in answer_markdown
+
+    archive = build_run_archive(run, run_dir / "run_artifacts.zip", project_root=tmp_path, answer=answer, query="nickel alloy annealing")
     assert archive.exists()
     with zipfile.ZipFile(archive) as zf:
         names = set(zf.namelist())
@@ -937,6 +947,9 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     assert "local_publication_files_manifest.json" in names
     assert "section_reports/sources_report.pdf" in names
     assert "section_reports/sources_report.docx" in names
+    assert "answer_report/routerai_answer.pdf" in names
+    assert "answer_report/routerai_answer.docx" in names
+    assert "answer_report/routerai_answer.json" in names
     assert "local_publications/01_local_nickel_report.pdf" in names
 
 

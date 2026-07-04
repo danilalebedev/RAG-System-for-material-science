@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from app.query.literature import answer_literature_with_provider_router, run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
+    build_answer_exports,
     build_orchestration_archive,
     build_orchestration_exports,
     build_section_exports,
@@ -232,6 +233,13 @@ def orchestration_output_dir(record: dict[str, Any]) -> Path:
     return ROOT / "data" / "processed" / "rag_runs" / run_id
 
 
+def answer_output_dir(record: dict[str, Any]) -> Path:
+    run = record.get("literature_run")
+    if run is not None and getattr(run, "output_dir", None):
+        return Path(run.output_dir) / "answer_report"
+    return orchestration_output_dir(record) / "answer_report"
+
+
 def render_reports(record: dict[str, Any]) -> None:
     run = record.get("literature_run")
     orchestration = record.get("orchestration")
@@ -240,6 +248,24 @@ def render_reports(record: dict[str, Any]) -> None:
     if run is None and orchestration is None:
         st.info("Отчет появится после поиска.")
         return
+    if answer is not None:
+        st.markdown("**RouterAI answer report**")
+        answer_exports = build_answer_exports(
+            answer_output_dir(record),
+            query=query,
+            answer=answer,
+            run=run,
+            orchestration=orchestration,
+        )
+        cols = st.columns(4)
+        with cols[0]:
+            render_download(answer_exports.get("pdf"), "PDF: RouterAI ответ", "application/pdf")
+        with cols[1]:
+            render_download(answer_exports.get("docx"), "DOCX: RouterAI ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with cols[2]:
+            render_download(answer_exports.get("json"), "JSON: RouterAI answer", "application/json")
+        with cols[3]:
+            render_download(answer_exports.get("markdown"), "MD: RouterAI answer", "text/markdown")
     if run is not None:
         st.markdown("**Web / literature reports**")
         cols = st.columns(3)
@@ -255,7 +281,7 @@ def render_reports(record: dict[str, Any]) -> None:
             if getattr(run, "full_run_json_path", None):
                 render_download(run.full_run_json_path, "JSON: все данные", "application/json")
         if getattr(run, "output_dir", None):
-            archive = build_run_archive(run, Path(run.output_dir) / "run_artifacts.zip")
+            archive = build_run_archive(run, Path(run.output_dir) / "run_artifacts.zip", answer=answer, query=query, project_root=ROOT)
             render_download(archive, "ZIP: web/literature artifacts", "application/zip")
 
     if orchestration is None:

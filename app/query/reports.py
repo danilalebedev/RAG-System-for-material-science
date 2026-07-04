@@ -694,6 +694,119 @@ def answer_text(answer: Any | None, fallback: str = "") -> str:
     return compact_text(getattr(answer, "text", answer), 20_000) or fallback
 
 
+def answer_report_links(run: Any | None, *, limit: int = 25) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if run is None:
+        return rows
+    for index, result in enumerate((getattr(run, "results", []) or [])[:limit], start=1):
+        rows.append(
+            {
+                "index": index,
+                "title": compact_text(getattr(result, "title", ""), 600),
+                "year": getattr(result, "year", None),
+                "source": getattr(result, "source", ""),
+                "score": getattr(result, "score", None),
+                "link": source_link(result),
+            }
+        )
+    return rows
+
+
+def build_answer_report_markdown(
+    *,
+    query: str | None,
+    answer: Any | None,
+    run: Any | None = None,
+    orchestration: Any | None = None,
+) -> str:
+    metadata = answer_metadata(answer)
+    report_query = query or getattr(getattr(run, "request", None), "query", "") or (
+        orchestration_query(orchestration) if orchestration is not None else ""
+    )
+    lines = [
+        "# RouterAI answer report",
+        "",
+        f"Запрос: {compact_text(report_query, 800)}",
+        "",
+        "## Итоговый ответ",
+        "",
+        answer_text(answer, "Ответ через RouterAI еще не был сгенерирован."),
+        "",
+        "## Metadata",
+    ]
+    if metadata:
+        for key, value in metadata.items():
+            lines.append(f"- {key}: {compact_text(value, 1000)}")
+    else:
+        lines.append("- Нет metadata.")
+
+    links = answer_report_links(run)
+    lines.extend(["", "## Релевантные web-ссылки"])
+    if links:
+        for row in links:
+            suffix = f"; score={row['score']}" if row.get("score") not in (None, "") else ""
+            lines.append(f"{row['index']}. {row['title']} ({row.get('source') or 'source'}, {row.get('year') or 'n/a'}){suffix}")
+            if row.get("link"):
+                lines.append(f"   - {row['link']}")
+    else:
+        lines.append("- Web-ссылки не найдены.")
+
+    if run is not None and getattr(run, "deep_results", None):
+        lines.extend(["", "## Deep Search summary"])
+        for index, item in enumerate((getattr(run, "deep_results", []) or [])[:20], start=1):
+            summary = getattr(item, "document_summary", {}) or {}
+            source = getattr(item, "source_result", None)
+            title = compact_text(getattr(source, "title", "") if source is not None else "", 260)
+            link = source_link(source) if source is not None else ""
+            lines.append(f"{index}. {title}")
+            if link:
+                lines.append(f"   - {link}")
+            lines.append(f"   - {compact_text(summary.get('summary') or summary.get('main_topic') or 'Summary не извлечен.', 1200)}")
+
+    if orchestration is not None:
+        rows = orchestration_all_rows(orchestration)
+        lines.extend(["", "## Local RAG evidence"])
+        data_rows = [row for row in rows if row.get("source_type") != "diagnostics"]
+        if not data_rows:
+            lines.append("- Local RAG evidence не найден.")
+        for index, row in enumerate(data_rows[:25], start=1):
+            locator = row_locator(row)
+            locator_text = f"; {locator}" if locator else ""
+            lines.append(f"{index}. {row_title(row)}{locator_text}")
+            preview = compact_text(row.get("preview") or row.get("summary") or row.get("path"), 600)
+            if preview:
+                lines.append(f"   - {preview}")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_answer_exports(
+    output_dir: Path,
+    *,
+    query: str | None,
+    answer: Any | None,
+    run: Any | None = None,
+    orchestration: Any | None = None,
+    prefix: str = "routerai_answer",
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", prefix.lower()).strip("_") or "routerai_answer"
+    markdown = build_answer_report_markdown(query=query, answer=answer, run=run, orchestration=orchestration)
+    md_path = write_text_report(output_dir / f"{safe_prefix}.md", markdown)
+    pdf_path = markdown_to_pdf(markdown, output_dir / f"{safe_prefix}.pdf")
+    docx_path = markdown_to_docx(markdown, output_dir / f"{safe_prefix}.docx")
+    json_path = write_json_report(
+        output_dir / f"{safe_prefix}.json",
+        {
+            "query": query,
+            "answer": answer_text(answer),
+            "metadata": answer_metadata(answer),
+            "web_links": answer_report_links(run),
+        },
+    )
+    return {"markdown": md_path, "pdf": pdf_path, "docx": docx_path, "json": json_path}
+
+
 def orchestration_query(orchestration: Any, query: str | None = None) -> str:
     rewrite = getattr(orchestration, "query_rewrite", None) or {}
     plan = getattr(orchestration, "plan", None)
@@ -1006,7 +1119,14 @@ def write_local_files_manifest(run: Any, output_path: Path, *, project_root: Pat
     ), manifest
 
 
-def build_run_archive(run: Any, output_path: Path, *, project_root: Path | None = None) -> Path:
+def build_run_archive(
+    run: Any,
+    output_path: Path,
+    *,
+    project_root: Path | None = None,
+    answer: Any | None = None,
+    query: str | None = None,
+) -> Path:
     project_root = project_root or PROJECT_ROOT
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_dir = Path(getattr(run, "output_dir", "") or output_path.parent)
@@ -1035,6 +1155,15 @@ def build_run_archive(run: Any, output_path: Path, *, project_root: Path | None 
     ]
     for section in ("sources", "comparison", "evidence", "charts", "deep"):
         candidate_paths.extend(build_section_exports(run, section, run_dir / "section_reports").values())
+    if answer is not None:
+        candidate_paths.extend(
+            build_answer_exports(
+                run_dir / "answer_report",
+                query=query or getattr(getattr(run, "request", None), "query", None),
+                answer=answer,
+                run=run,
+            ).values()
+        )
     for attr in (
         "report_pdf_path",
         "report_docx_path",
