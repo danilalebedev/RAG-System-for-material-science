@@ -32,6 +32,7 @@ from app.query.cockpit import (  # noqa: E402
     query_decomposition,
 )
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
+from app.query.local_orchestrator import run_local_knowledge  # noqa: E402
 from app.query.reports import comparison_insights, run_overall_summary, source_counts, year_counts  # noqa: E402
 from app.query.rewrite import deterministic_query_rewrite  # noqa: E402
 from app.graph.search import load_graph, neighbors as graph_neighbors, paths_to_types, search_entities  # noqa: E402
@@ -67,6 +68,48 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
         st.info(empty_text)
         return
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
+
+
+def render_local_knowledge_bundle(bundle: Any) -> None:
+    st.subheader("Local Knowledge")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Raw chunks", len(bundle.raw_chunks))
+    col2.metric("Summaries", len(bundle.summary_hits))
+    col3.metric("Tables", len(bundle.table_hits))
+    col4.metric("Graph entities", len(bundle.graph_hits))
+    st.markdown(bundle.brief)
+    if bundle.warnings:
+        render_warnings(bundle.warnings)
+
+    tabs = st.tabs(["Raw", "Summaries", "Tables", "Graph", "Context", "Rewrite"])
+    with tabs[0]:
+        render_table(
+            [
+                {
+                    "rank": item.rank,
+                    "score": item.score,
+                    "doc_id": item.doc_id,
+                    "chunk_id": item.chunk_id,
+                    "source_path": item.source_path,
+                    "text": item.text[:900],
+                }
+                for item in bundle.raw_chunks
+            ],
+            empty_text="No raw chunks found.",
+        )
+    with tabs[1]:
+        render_table([item.as_dict() for item in bundle.summary_hits], empty_text="No summary hits found.")
+    with tabs[2]:
+        render_table([item.as_dict() for item in bundle.table_hits], empty_text="No table hits found.")
+    with tabs[3]:
+        render_table(bundle.graph_hits, empty_text="No graph hits found.")
+        st.write("Neighbors")
+        render_table(bundle.graph_neighbors, empty_text="No graph neighbors found.")
+    with tabs[4]:
+        st.text_area("Combined evidence context", value=bundle.context, height=420)
+        st.download_button("Download local context", data=bundle.context, file_name="local_knowledge_context.md", mime="text/markdown")
+    with tabs[5]:
+        st.json(bundle.query_plan)
 
 
 def render_local_world_cards(rows: list[dict[str, Any]]) -> None:
@@ -390,7 +433,7 @@ def download_path_button(label: str, path: Any, *, file_name: str, mime: str) ->
 
 def render_run(run: Any) -> None:
     st.session_state["last_run"] = run
-    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Knowledge Graph", "Графики", "Отчет"])
+    tabs = st.tabs(["Cockpit", "Публикации", "Deep Search", "Сравнение", "Evidence", "Local Knowledge", "Knowledge Graph", "Графики", "Отчет"])
     corrected_query = run.query_plan.get("corrected_query") if run.query_plan else run.request.query
     search_queries = (run.query_plan or {}).get("search_queries") or []
 
@@ -482,9 +525,19 @@ def render_run(run: Any) -> None:
             render_table(run.comparison.rows)
 
     with tabs[5]:
-        render_knowledge_graph_tab(run.request.query)
+        if st.button("Run local orchestrator", key=f"local_orchestrator_{str(run.output_dir or run.request.query)[-80:]}"):
+            with st.spinner("Running local raw/summary/table/graph search..."):
+                st.session_state["last_local_knowledge"] = run_local_knowledge(run.request.query)
+        local_bundle = st.session_state.get("last_local_knowledge")
+        if local_bundle:
+            render_local_knowledge_bundle(local_bundle)
+        else:
+            st.info("Run local orchestrator to combine raw chunks, summaries, tables and graph evidence for this query.")
 
     with tabs[6]:
+        render_knowledge_graph_tab(run.request.query)
+
+    with tabs[7]:
         render_chart(result_rows(run))
         if run.comparison:
             coverage = pd.DataFrame(
@@ -512,7 +565,7 @@ def render_run(run: Any) -> None:
             st.write("Gap radar")
             st.bar_chart(numeric_radar.set_index("signal")["value"])
 
-    with tabs[7]:
+    with tabs[8]:
         st.subheader("Краткий управленческий вывод")
         st.markdown(run.executive_brief_markdown or executive_brief_markdown(run))
         col1, col2, col3 = st.columns(3)
@@ -684,17 +737,29 @@ def main() -> None:
     pre_search_slots: dict[str, str] = {}
     if rd_question:
         pre_search_slots = render_pre_search_decomposer(rd_question, materials_only=materials_only)
-    col1, col2, col3 = st.columns([1, 1, 3])
+    col1, col2, col_local, col3 = st.columns([1, 1, 1, 3])
     with col1:
         st.button("Decompose query")
     with col2:
         run_from_cockpit = st.button("Run search", type="primary")
+    with col_local:
+        run_local_from_cockpit = st.button("Run local")
     with col3:
         st.caption(f"Mode: {analysis_mode}. Отредактированные slots попадут в поисковую формулировку.")
 
     render_history()
 
-    query = st.chat_input("Спросите про материал, процесс, режим или свойство")
+    local_rendered = False
+    if run_local_from_cockpit:
+        if not rd_question:
+            st.warning("Enter an R&D question before local search.")
+        else:
+            with st.spinner("Running local raw/summary/table/graph search..."):
+                st.session_state["last_local_knowledge"] = run_local_knowledge(rd_question)
+            render_local_knowledge_bundle(st.session_state["last_local_knowledge"])
+            local_rendered = True
+
+    query = None if run_local_from_cockpit else st.chat_input("Спросите про материал, процесс, режим или свойство")
     active_query = rd_question if run_from_cockpit else query
     if run_from_cockpit and not active_query:
         st.warning("Введите R&D question перед запуском поиска.")
@@ -742,7 +807,7 @@ def main() -> None:
         render_run(run)
     elif st.session_state.get("last_run"):
         render_run(st.session_state["last_run"])
-    else:
+    elif not local_rendered:
         st.info("Введите запрос в чат ниже.")
 
 
