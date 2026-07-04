@@ -56,6 +56,16 @@ http://127.0.0.1:8501/
 - `Ответ через RouterAI`: on.
 - `Deep Search`: off для первого быстрого ответа; затем нажать кнопку `Запустить Deep Search по текущей выдаче`.
 
+Перед live-demo можно выполнить preflight:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\demo_preflight.py
+```
+
+Он проверяет RouterAI key readiness без печати секрета, наличие `routerai_bge_m3` manifests, Streamlit import,
+доступность `http://127.0.0.1:8501/` и smoke-поиск по raw/summary streams. JSON-отчет сохраняется в
+`data/processed/demo_preflight/preflight_report.json`.
+
 Демо-запрос для режима `Поиск методик`:
 
 ```text

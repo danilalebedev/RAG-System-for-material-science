@@ -208,6 +208,8 @@ failing the run.
 - `app/ui/demo_app.py` - основной Streamlit cockpit.
 - `scripts/search_web_literature.py` - CLI smoke/automation entrypoint.
 - `scripts/run_demo_app.py` - локальный запуск Streamlit на `0.0.0.0` с выводом local/LAN URL.
+- `scripts/demo_preflight.py` - быстрый readiness check перед защитой: RouterAI key configured flag,
+  `routerai_bge_m3` manifests, Streamlit import/URL и offline search smoke по raw + summary streams.
 
 ### Поиск, источники и ранжирование
 
