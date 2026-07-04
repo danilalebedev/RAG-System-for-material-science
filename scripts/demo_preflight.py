@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -28,6 +30,8 @@ REQUIRED_STREAMS = (
     "procedure_summary_vector",
 )
 DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
+EXPECTED_DEMO_REQUEST_TYPES = ("Литературный поиск", "Поиск методик", "Поиск свойств")
+BANNED_DEMO_UI_LABELS = ("Demo scenario", "Query Decomposer", "Advanced API metadata sources")
 
 
 def configure_stdio() -> None:
@@ -106,6 +110,58 @@ def check_demo_app_import(root: Path) -> dict[str, Any]:
         "name": "demo_app_import",
         "status": "pass" if ok else "fail",
         "detail": detail,
+    }
+
+
+def demo_ui_contract_issues(root: Path, demo_app_module: Any) -> list[str]:
+    issues: list[str] = []
+    request_types = list(getattr(demo_app_module, "REQUEST_TYPES", {}).keys())
+    if request_types != list(EXPECTED_DEMO_REQUEST_TYPES):
+        issues.append(f"request_types={request_types!r}, expected={list(EXPECTED_DEMO_REQUEST_TYPES)!r}")
+
+    source_path = root / "app" / "ui" / "demo_app.py"
+    if source_path.exists():
+        source_text = source_path.read_text(encoding="utf-8")
+        for label in BANNED_DEMO_UI_LABELS:
+            if label.casefold() in source_text.casefold():
+                issues.append(f"banned_label_present={label!r}")
+
+    search_context_rows = getattr(demo_app_module, "search_context_rows", None)
+    if not callable(search_context_rows):
+        issues.append("search_context_rows_missing")
+        return issues
+    probe_run = SimpleNamespace(
+        request=SimpleNamespace(query="никелевые сплавы"),
+        keywords=["никелевые сплавы", "твердость"],
+        query_plan={
+            "original_query": "никелевые сплавы",
+            "llm_rewrite": {
+                "corrected_query": "nickel alloys hardness",
+                "search_queries": ["nickel alloys hardness"],
+                "rewrite_used_llm": True,
+            },
+        },
+    )
+    rows = search_context_rows(probe_run, None)
+    if not rows or not all({"Что используется", "Значение"}.issubset(set(row)) for row in rows):
+        issues.append("search_context_rows_not_user_facing")
+    if any({"stage", "query", "llm"} & set(row) for row in rows):
+        issues.append("legacy_decomposer_columns_present")
+    return issues
+
+
+def check_demo_ui_contract(root: Path) -> dict[str, Any]:
+    try:
+        demo_app_module = importlib.import_module("app.ui.demo_app")
+    except Exception as exc:  # noqa: BLE001 - preflight should report import errors, not crash.
+        return {"name": "demo_ui_contract", "status": "fail", "error": f"{type(exc).__name__}: {exc}"}
+    issues = demo_ui_contract_issues(root, demo_app_module)
+    return {
+        "name": "demo_ui_contract",
+        "status": "fail" if issues else "pass",
+        "request_types": list(getattr(demo_app_module, "REQUEST_TYPES", {}).keys()),
+        "banned_labels": list(BANNED_DEMO_UI_LABELS),
+        "issues": issues,
     }
 
 
@@ -240,6 +296,7 @@ def main() -> int:
         check_routerai_budget(root),
         check_streamlit_import(),
         check_demo_app_import(root),
+        check_demo_ui_contract(root),
         *profile_manifest_checks(root, config_path, args.profile),
     ]
     if not args.skip_url:

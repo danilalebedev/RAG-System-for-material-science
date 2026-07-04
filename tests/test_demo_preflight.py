@@ -84,6 +84,32 @@ def test_check_demo_app_import_reports_failure(monkeypatch, tmp_path: Path) -> N
     assert result == {"name": "demo_app_import", "status": "fail", "detail": "ImportError: broken"}
 
 
+def test_check_demo_ui_contract_reports_current_public_modes() -> None:
+    result = demo_preflight.check_demo_ui_contract(Path(__file__).resolve().parents[1])
+
+    assert result["status"] == "pass"
+    assert result["request_types"] == ["Литературный поиск", "Поиск методик", "Поиск свойств"]
+    assert result["issues"] == []
+
+
+def test_demo_ui_contract_detects_legacy_labels_and_columns(tmp_path: Path) -> None:
+    source_path = tmp_path / "app" / "ui" / "demo_app.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("st.write('Demo scenario')\nst.write('Query Decomposer')", encoding="utf-8")
+    fake_module = SimpleNamespace(
+        REQUEST_TYPES={"Demo scenario": []},
+        search_context_rows=lambda _run, _orchestration: [{"stage": "corrected", "query": "nickel", "llm": True}],
+    )
+
+    issues = demo_preflight.demo_ui_contract_issues(tmp_path, fake_module)
+
+    assert any("request_types" in issue for issue in issues)
+    assert "banned_label_present='Demo scenario'" in issues
+    assert "banned_label_present='Query Decomposer'" in issues
+    assert "search_context_rows_not_user_facing" in issues
+    assert "legacy_decomposer_columns_present" in issues
+
+
 def test_run_search_smoke_checks_required_streams(monkeypatch, tmp_path: Path) -> None:
     def fake_run(*_: object, **__: object) -> SimpleNamespace:
         streams = {stream: 1 for stream in demo_preflight.REQUIRED_STREAMS}
