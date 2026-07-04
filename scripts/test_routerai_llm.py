@@ -6,6 +6,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 from app.llm.routerai_client import RouterAILLMClient, RouterAILLMConfig
 
@@ -15,8 +18,8 @@ def main() -> None:
     load_dotenv(root / ".env")
     client = RouterAILLMClient(RouterAILLMConfig.from_env(load_dotenv_file=False))
     response = client.generate(
-        [{"role": "user", "content": "Ответь коротко: RouterAI API работает?"}],
-        max_tokens=100,
+        [{"role": "user", "content": "Ответь ровно одним словом: ГОТОВО"}],
+        max_tokens=300,
         temperature=0.2,
     )
     print(response.text)
