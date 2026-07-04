@@ -108,6 +108,7 @@ def test_demo_ui_contract_detects_legacy_labels_and_columns(tmp_path: Path) -> N
     assert "banned_label_present='Query Decomposer'" in issues
     assert "search_context_rows_not_user_facing" in issues
     assert "legacy_decomposer_columns_present" in issues
+    assert "workflow_summary_rows_missing" in issues
 
 
 def test_run_search_smoke_checks_required_streams(monkeypatch, tmp_path: Path) -> None:

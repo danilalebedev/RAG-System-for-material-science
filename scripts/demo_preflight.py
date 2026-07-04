@@ -147,6 +147,36 @@ def demo_ui_contract_issues(root: Path, demo_app_module: Any) -> list[str]:
         issues.append("search_context_rows_not_user_facing")
     if any({"stage", "query", "llm"} & set(row) for row in rows):
         issues.append("legacy_decomposer_columns_present")
+
+    workflow_summary_rows = getattr(demo_app_module, "workflow_summary_rows", None)
+    if not callable(workflow_summary_rows):
+        issues.append("workflow_summary_rows_missing")
+        return issues
+    probe_orchestration = SimpleNamespace(
+        plan=SimpleNamespace(routes=["summary_rag", "raw_rag", "table_search", "graph_search"]),
+        retrieved_context=SimpleNamespace(
+            as_dict=lambda: {
+                "raw": [{"id": "raw:1"}],
+                "summaries": [{"id": "summary:1"}],
+                "tables": [{"id": "table:1"}],
+                "graph": [{"id": "graph:1"}],
+                "web": [],
+            }
+        ),
+        fallbacks=[],
+    )
+    workflow_rows = workflow_summary_rows(
+        {
+            "request_type": "Поиск методик",
+            "literature_run": probe_run,
+            "orchestration": probe_orchestration,
+            "answer": None,
+        }
+    )
+    if not workflow_rows or not all({"Шаг", "Что сделано", "Объем"}.issubset(set(row)) for row in workflow_rows):
+        issues.append("workflow_summary_rows_not_user_facing")
+    if any({"retrieved_context", "plan", "query_rewrite"} & set(row) for row in workflow_rows):
+        issues.append("workflow_summary_uses_internal_json_keys")
     return issues
 
 
