@@ -212,7 +212,7 @@ failing the run.
   stale demo-процессы на выбранном порту, стартует clean Streamlit server session и пишет логи в `logs/streamlit_demo/`.
   Streamlit на Windows может держать parent/child Python-пару; актуальный listener проверяется healthcheck по URL.
 - `scripts/demo_preflight.py` - быстрый readiness check перед защитой: RouterAI key configured flag,
-  `routerai_bge_m3` manifests, Streamlit import/URL и offline search smoke по raw + summary streams.
+  `demo_app_import`, `routerai_bge_m3` manifests, Streamlit import/URL и offline search smoke по raw + summary streams.
 
 ### Поиск, источники и ранжирование
 

@@ -69,6 +69,21 @@ def test_routerai_budget_defaults_and_env_override(monkeypatch, tmp_path: Path) 
     assert env_error is None
 
 
+def test_check_demo_app_import_reports_success() -> None:
+    result = demo_preflight.check_demo_app_import(Path(__file__).resolve().parents[1])
+
+    assert result["status"] == "pass"
+    assert result["detail"] == "ok"
+
+
+def test_check_demo_app_import_reports_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(demo_preflight, "verify_demo_import", lambda _root: (False, "ImportError: broken"))
+
+    result = demo_preflight.check_demo_app_import(tmp_path)
+
+    assert result == {"name": "demo_app_import", "status": "fail", "detail": "ImportError: broken"}
+
+
 def test_run_search_smoke_checks_required_streams(monkeypatch, tmp_path: Path) -> None:
     def fake_run(*_: object, **__: object) -> SimpleNamespace:
         streams = {stream: 1 for stream in demo_preflight.REQUIRED_STREAMS}

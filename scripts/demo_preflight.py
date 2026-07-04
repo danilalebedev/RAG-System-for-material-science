@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.index.embeddings import apply_retrieval_profile, load_retrieval_config  # noqa: E402
+from scripts.run_demo_app import verify_demo_import  # noqa: E402
 
 
 REQUIRED_STREAMS = (
@@ -97,6 +98,15 @@ def check_routerai_budget(root: Path) -> dict[str, Any]:
 def check_streamlit_import() -> dict[str, Any]:
     installed = importlib.util.find_spec("streamlit") is not None
     return {"name": "streamlit_import", "status": "pass" if installed else "fail", "installed": installed}
+
+
+def check_demo_app_import(root: Path) -> dict[str, Any]:
+    ok, detail = verify_demo_import(root)
+    return {
+        "name": "demo_app_import",
+        "status": "pass" if ok else "fail",
+        "detail": detail,
+    }
 
 
 def check_streamlit_url(url: str, *, timeout_seconds: int) -> dict[str, Any]:
@@ -229,6 +239,7 @@ def main() -> int:
         check_routerai_key(root),
         check_routerai_budget(root),
         check_streamlit_import(),
+        check_demo_app_import(root),
         *profile_manifest_checks(root, config_path, args.profile),
     ]
     if not args.skip_url:
