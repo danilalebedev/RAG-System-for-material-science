@@ -213,6 +213,8 @@ failing the run.
   Streamlit на Windows может держать parent/child Python-пару; актуальный listener проверяется healthcheck по URL.
 - `scripts/demo_preflight.py` - быстрый readiness check перед защитой: RouterAI key configured flag,
   `demo_app_import`, `routerai_bge_m3` manifests, Streamlit import/URL и offline search smoke по raw + summary streams.
+- `scripts/build_defense_bundle.py` - сборка lightweight ZIP для организаторов: pitch/runbook docs, preflight JSON,
+  RouterAI BGE-M3 manifests и README с командами запуска без `.env`, raw corpus и full web text.
 
 ### Поиск, источники и ранжирование
 
@@ -411,6 +413,12 @@ ZIP intentionally не архивирует полный web full text: для �
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_demo_app.py --background --address 127.0.0.1
+```
+
+Для сборки handoff-архива:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_defense_bundle.py --run-preflight
 ```
 
 Security constraints:
