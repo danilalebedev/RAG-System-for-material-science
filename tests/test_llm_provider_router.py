@@ -6,7 +6,7 @@ import pytest
 
 from app.llm.provider_router import ProviderRouter, ProviderRouterConfig
 from app.llm.types import LLMProviderError, LLMResponse, compact_error
-from app.web_search.deep_search import RouterCompletionClient
+from app.web_search.deep_search import RouterCompletionClient, build_router_completion_client_from_env
 
 
 class FakeClient:
@@ -96,6 +96,14 @@ def test_provider_router_can_use_routerai_as_primary_without_yandex_call() -> No
     assert response.used_evidence is True
     assert yandex.calls == 0
     assert routerai.calls == 1
+
+
+def test_provider_router_from_env_primary_provider_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("LLM_PRIMARY_PROVIDER", "yandex")
+
+    router = ProviderRouter.from_env(root=tmp_path, primary_provider="routerai")
+
+    assert router.config.primary_provider == "routerai"
 
 
 def test_provider_router_returns_local_brief_when_both_remote_providers_fail() -> None:
@@ -202,3 +210,28 @@ def test_router_completion_client_rejects_local_fallback_for_deep_search() -> No
 
     with pytest.raises(RuntimeError, match="structured deep-search extraction"):
         client.complete("extract")
+
+
+def test_deep_search_completion_client_is_routerai_first(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+    fake_router = FakeRouter(
+        LLMResponse(
+            text='{"document_summary": {"summary": "ok"}}',
+            provider="routerai",
+            model="deepseek/deepseek-chat-v3.1",
+            status="primary",
+            used_evidence=True,
+        )
+    )
+
+    def fake_from_env(**kwargs: object) -> FakeRouter:
+        captured.update(kwargs)
+        return fake_router
+
+    monkeypatch.setattr("app.web_search.deep_search.ProviderRouter.from_env", fake_from_env)
+
+    client = build_router_completion_client_from_env(tmp_path)
+
+    assert isinstance(client, RouterCompletionClient)
+    assert captured["root"] == tmp_path
+    assert captured["primary_provider"] == "routerai"

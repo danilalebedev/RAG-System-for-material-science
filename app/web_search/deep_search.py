@@ -174,7 +174,7 @@ def build_yandex_client_from_env(config_path: Path | None = None) -> CompletionC
 
 
 def build_router_completion_client_from_env(project_root: Path) -> CompletionClient:
-    return RouterCompletionClient(ProviderRouter.from_env(root=project_root))
+    return RouterCompletionClient(ProviderRouter.from_env(root=project_root, primary_provider="routerai"))
 
 
 def run_deep_search(

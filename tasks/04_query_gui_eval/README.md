@@ -176,6 +176,11 @@ graph outputs и parsed sources.
 5. `app/ui/demo_app.py` отображает результат как cockpit: ответ, источники, сравнение, evidence, графы,
    графики и отчеты.
 
+LLM path for the demo is RouterAI-first: query rewrite / Deep Search extraction / final answer helpers call
+`ProviderRouter.from_env(..., primary_provider="routerai")`. If RouterAI is unavailable, the existing provider
+router fallback behavior is preserved so the GUI degrades to Yandex/local deterministic responses instead of
+failing the run.
+
 ### Ключевые файлы
 
 - `app/web_search/schemas.py` - Pydantic-контракты для web literature layer:

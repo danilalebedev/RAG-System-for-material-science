@@ -621,7 +621,7 @@ def test_answer_literature_with_provider_router_passes_literature_context(monkey
                 used_evidence=bool(kwargs.get("context")),
             )
 
-    monkeypatch.setattr("app.query.literature.ProviderRouter.from_env", lambda root=None: FakeRouter())
+    monkeypatch.setattr("app.query.literature.ProviderRouter.from_env", lambda **_: FakeRouter())
     source = LiteratureSearchResult(
         result_id="crossref_1",
         source="crossref",

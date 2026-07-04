@@ -193,7 +193,7 @@ def test_answer_with_provider_router_passes_retrieved_context(monkeypatch, tmp_p
                 used_evidence=bool(kwargs.get("context")),
             )
 
-    monkeypatch.setattr("app.query.orchestrator.ProviderRouter.from_env", lambda root=None: FakeRouter())
+    monkeypatch.setattr("app.query.orchestrator.ProviderRouter.from_env", lambda **_: FakeRouter())
     result = QueryOrchestrationResult(
         plan=plan_query("nickel ore"),
         retrieved_context=RetrievedContext(

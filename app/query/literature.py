@@ -193,7 +193,7 @@ def answer_literature_with_provider_router(
     max_tokens: int = 900,
     temperature: float = 0.2,
 ) -> LLMResponse:
-    router = ProviderRouter.from_env(root=project_root)
+    router = ProviderRouter.from_env(root=project_root, primary_provider="routerai")
     return router.ask(
         query,
         system_prompt=LITERATURE_SYSTEM_PROMPT,

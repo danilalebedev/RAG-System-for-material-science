@@ -741,7 +741,7 @@ def answer_with_provider_router(
     max_tokens: int = 900,
     temperature: float = 0.2,
 ) -> LLMResponse:
-    router = ProviderRouter.from_env(root=project_root)
+    router = ProviderRouter.from_env(root=project_root, primary_provider="routerai")
     context = format_orchestration_context(result)
     return router.ask(
         query,

@@ -37,7 +37,7 @@ class ProviderRouter:
         self.config = config or ProviderRouterConfig()
 
     @classmethod
-    def from_env(cls, *, root: Path | None = None) -> "ProviderRouter":
+    def from_env(cls, *, root: Path | None = None, primary_provider: str | None = None) -> "ProviderRouter":
         dotenv_path = root / ".env" if root is not None else None
         yandex_client: YandexLLMClient | None = None
         routerai_client: RouterAILLMClient | None = None
@@ -54,15 +54,15 @@ class ProviderRouter:
         except LLMProviderError as exc:
             routerai_error = exc
 
-        primary_provider = os.getenv("LLM_PRIMARY_PROVIDER", "yandex").strip().lower()
-        if primary_provider not in {"yandex", "routerai"}:
-            primary_provider = "yandex"
+        selected_provider = (primary_provider or os.getenv("LLM_PRIMARY_PROVIDER", "yandex")).strip().lower()
+        if selected_provider not in {"yandex", "routerai"}:
+            selected_provider = "yandex"
         return cls(
             yandex_client=yandex_client,
             routerai_client=routerai_client,
             yandex_init_error=yandex_error,
             routerai_init_error=routerai_error,
-            config=ProviderRouterConfig(primary_provider=primary_provider),
+            config=ProviderRouterConfig(primary_provider=selected_provider),
         )
 
     def ask(
