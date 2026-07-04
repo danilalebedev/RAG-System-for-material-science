@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.index.chunks import iter_chunk_records
 from app.index.embeddings import LocalHashEmbeddingClient
 from app.index.lexical import build_lexical_index
@@ -135,3 +137,38 @@ def test_validation_agent_fails_irrelevant_search_case(tmp_path: Path) -> None:
     assert report["status"] == "fail"
     assert report["search_cases"][0]["status"] == "fail"
     assert any(issue["code"] == "low_term_coverage" for issue in report["issues"])
+
+
+def test_validation_agent_reports_dense_query_embedding_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config_path, chunks_path, index_dir, lexical_dir = build_fixture_index(tmp_path)
+    manifest_path = index_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["embedding_backend"] = "yandex"
+    manifest["model_selection"] = "fallback"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def fail_embedding_client(**_: object) -> object:
+        raise RuntimeError("HTTP 403: Permission denied")
+
+    monkeypatch.setattr("app.rag.validation.build_embedding_client", fail_embedding_client)
+    report = run_validation(
+        root=tmp_path,
+        config_path=config_path,
+        index_dir=index_dir,
+        lexical_dir=lexical_dir,
+        chunks_path=chunks_path,
+        cases=[
+            SearchCase(
+                query="РЅРёРєРµР»РµРІС‹Рµ РєРѕРЅС†РµРЅС‚СЂР°С‚С‹ РѕР±Р¶РёРі",
+                expected_terms=("РЅРёРєРµР»", "РєРѕРЅС†РµРЅС‚СЂР°С‚", "РѕР±Р¶РёРі"),
+                min_unique_terms=2,
+                min_top1_terms=1,
+                min_results=1,
+            )
+        ],
+        top_k=2,
+        allow_network=True,
+    )
+
+    assert report["status"] == "fail"
+    assert any(issue["code"] == "dense_query_embedding_failed" for issue in report["issues"])

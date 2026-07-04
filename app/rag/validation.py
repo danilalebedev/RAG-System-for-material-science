@@ -258,15 +258,25 @@ def run_search_case(
             )
         else:
             model_selection = "fallback" if manifest.get("model_selection") == "fallback" else "query"
-            client = build_embedding_client(
-                backend=backend,
-                retrieval_config=retrieval_config,
-                kind="query",
-                fallback_model=model_selection == "fallback",
-                api_key=os.getenv("YANDEX_API_KEY"),
-                folder_id=os.getenv("YANDEX_FOLDER_ID"),
-            )
-            dense_hits = dense_search(index_dir, client.embed_text(case.query), top_k=dense_top_k, batch_size=vector_batch_size)
+            try:
+                client = build_embedding_client(
+                    backend=backend,
+                    retrieval_config=retrieval_config,
+                    kind="query",
+                    fallback_model=model_selection == "fallback",
+                    api_key=os.getenv("YANDEX_API_KEY"),
+                    folder_id=os.getenv("YANDEX_FOLDER_ID"),
+                )
+                dense_hits = dense_search(index_dir, client.embed_text(case.query), top_k=dense_top_k, batch_size=vector_batch_size)
+            except Exception as exc:  # noqa: BLE001 - validation must produce an actionable report.
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        "dense_query_embedding_failed",
+                        "dense query embedding failed; check Yandex credentials and model permissions",
+                        {"error": str(exc)[:500]},
+                    )
+                )
     if mode in {"hybrid", "lexical"} and LexicalIndex(lexical_dir).exists():
         lexical_hits = lexical_search(lexical_dir, case.query, top_k=lexical_top_k)
 

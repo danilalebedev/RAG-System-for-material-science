@@ -122,14 +122,16 @@ class YandexEmbeddingClient:
                     prepared_text = shrink_embedding_text(prepared_text)
                     continue
                 if response.status_code in {500, 502, 503, 504}:
-                    raise RuntimeError(f"transient HTTP {response.status_code}: {response.text[:500]}")
+                    raise TransientEmbeddingError(f"transient HTTP {response.status_code}: {response.text[:500]}")
                 if response.status_code >= 400:
-                    raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
+                    raise NonRetryableEmbeddingError(f"HTTP {response.status_code}: {response.text[:500]}")
                 response.raise_for_status()
                 vector = parse_embedding_response(response.json())
                 self.dimension = len(vector)
                 return vector
-            except Exception as exc:  # noqa: BLE001 - CLI keeps cache and exits clearly after retries.
+            except NonRetryableEmbeddingError:
+                raise
+            except (requests.RequestException, RuntimeError, RateLimitError) as exc:
                 last_error = exc
                 if attempt >= self.config.max_retries:
                     break
@@ -157,6 +159,14 @@ class RateLimitError(RuntimeError):
     def __init__(self, message: str, *, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class TransientEmbeddingError(RuntimeError):
+    pass
+
+
+class NonRetryableEmbeddingError(RuntimeError):
+    pass
 
 
 def retry_after_seconds(response: requests.Response) -> float | None:

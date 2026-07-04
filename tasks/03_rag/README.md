@@ -1,5 +1,11 @@
 # 03. RAG Index Build
 
+## Актуальный статус
+
+Полный raw-chunks vector index по `89 703` chunks и SQLite FTS5 lexical index собраны. Подробный runbook, команды генерации, QA, artifacts и текущий blocker по Yandex dense/hybrid query embeddings записаны в `tasks/03_rag/full_raw_chunks_rag_report.md`.
+
+Рабочий режим на момент последней проверки: `scripts/search_cli.py "<query>" --mode lexical --top-k 5`. Dense/hybrid режим требует восстановить доступ Yandex query embedding endpoint: сейчас live requests возвращают `HTTP 403 Permission denied`.
+
 Дата: 2026-07-03.
 
 ## 0. Текущая реализация

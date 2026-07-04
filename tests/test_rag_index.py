@@ -3,8 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+import requests
+
 from app.index.chunks import iter_chunk_records
-from app.index.embeddings import LocalHashEmbeddingClient, prepare_embedding_text
+from app.index.embeddings import (
+    EmbeddingConfig,
+    LocalHashEmbeddingClient,
+    NonRetryableEmbeddingError,
+    YandexEmbeddingClient,
+    prepare_embedding_text,
+)
 from app.index.lexical import LexicalIndex, build_lexical_index
 from app.index.vector_store import save_vector_index
 from app.rag.retrieval import dense_search, materialize_results, reciprocal_rank_fusion
@@ -69,6 +78,47 @@ def test_local_vector_and_lexical_retrieval_over_chunks(tmp_path: Path) -> None:
     assert results[0].chunk_id == "chunk_nickel"
     assert results[0].doc_id == "doc_1"
     assert "обжиг" in results[0].text
+
+
+def test_yandex_client_does_not_retry_non_retryable_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, *_: object, **__: object) -> requests.Response:
+            self.calls += 1
+            response = requests.Response()
+            response.status_code = 403
+            response._content = b'{"error":"Permission denied","code":7}'  # noqa: SLF001
+            response.encoding = "utf-8"
+            return response
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.index.embeddings.time.sleep", sleeps.append)
+    session = FakeSession()
+    config = EmbeddingConfig(
+        endpoint="https://example.invalid/textEmbedding",
+        auth_scheme="Api-Key",
+        doc_model_uri_template="emb://{folder_id}/text-search-doc/latest",
+        query_model_uri_template="emb://{folder_id}/text-search-query/latest",
+        fallback_doc_model_uri_template="emb://{folder_id}/text-search-doc/latest",
+        fallback_query_model_uri_template="emb://{folder_id}/text-search-query/latest",
+        max_retries=20,
+    )
+    client = YandexEmbeddingClient(
+        api_key="fake-key",
+        folder_id="fake-folder",
+        config=config,
+        kind="query",
+        fallback=True,
+        session=session,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(NonRetryableEmbeddingError):
+        client.embed_text("nickel concentrate roasting")
+
+    assert session.calls == 1
+    assert sleeps == []
 
 
 def test_prepare_embedding_text_truncates_yandex_input() -> None:
