@@ -17,6 +17,7 @@ def test_collect_bundle_files_marks_required_docs_and_optional_manifests(tmp_pat
     write(tmp_path / "reports" / "oreacle_defense_pack.md")
     write(tmp_path / "reports" / "oreacle_pitch_deck.md")
     write(tmp_path / "reports" / "oreacle_routerai_demo_script.md")
+    write(tmp_path / "reports" / "oreacle_demo_video_storyboard.md")
     write(tmp_path / "reports" / "oreacle_marketing_demo_plan.md")
     write(tmp_path / "tasks" / "04_query_gui_eval" / "README.md")
     write(tmp_path / "data" / "indexes" / "chunks_routerai_bge_m3" / "manifest.json", "{}")
@@ -26,6 +27,7 @@ def test_collect_bundle_files_marks_required_docs_and_optional_manifests(tmp_pat
 
     assert "reports/oreacle_defense_pack.md" in arcnames
     assert "reports/oreacle_pitch_deck.md" in arcnames
+    assert "reports/oreacle_demo_video_storyboard.md" in arcnames
     assert "tasks/04_query_gui_eval/README.md" in arcnames
     assert "data/indexes/chunks_routerai_bge_m3/manifest.json" in arcnames
     assert "data/indexes/procedure_summaries_routerai_bge_m3/manifest.json" in missing
@@ -36,6 +38,7 @@ def test_build_defense_bundle_writes_safe_zip(tmp_path: Path) -> None:
         "reports/oreacle_defense_pack.md",
         "reports/oreacle_pitch_deck.md",
         "reports/oreacle_routerai_demo_script.md",
+        "reports/oreacle_demo_video_storyboard.md",
         "reports/oreacle_marketing_demo_plan.md",
         "tasks/04_query_gui_eval/README.md",
         "config/retrieval/default.json",
@@ -72,6 +75,7 @@ def test_build_defense_bundle_writes_safe_zip(tmp_path: Path) -> None:
     assert "README_DEFENSE_BUNDLE.md" in names
     assert "reports/oreacle_defense_pack.md" in names
     assert "reports/oreacle_pitch_deck.md" in names
+    assert "reports/oreacle_demo_video_storyboard.md" in names
     assert "data/processed/demo_preflight/preflight_report.json" in names
     assert "data/processed/demo_smoke/smoke_report.json" in names
     assert ".env" not in names
@@ -87,6 +91,7 @@ def test_build_defense_bundle_can_refresh_demo_smoke(tmp_path: Path, monkeypatch
         "reports/oreacle_defense_pack.md",
         "reports/oreacle_pitch_deck.md",
         "reports/oreacle_routerai_demo_script.md",
+        "reports/oreacle_demo_video_storyboard.md",
         "reports/oreacle_marketing_demo_plan.md",
         "tasks/04_query_gui_eval/README.md",
     ):

@@ -3,7 +3,7 @@
 Дата: 2026-07-04
 
 Цель документа: короткий материал для защиты, демовидео и финального питча. Он описывает текущий Streamlit GUI и не использует старые Demo scenario / Query Decomposer элементы.
-Короткая структура слайдов вынесена отдельно в `reports/oreacle_pitch_deck.md`.
+Короткая структура слайдов вынесена отдельно в `reports/oreacle_pitch_deck.md`, а монтажный лист для записи демовидео - в `reports/oreacle_demo_video_storyboard.md`.
 
 ## 1. One-liner
 

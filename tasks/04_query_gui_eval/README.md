@@ -216,7 +216,7 @@ failing the run.
 - `scripts/smoke_demo_scenarios.py` - product smoke для трех текущих режимов GUI: `Литературный поиск`,
   `Поиск методик`, `Поиск свойств`; использует fake web metadata client, не делает платных LLM/web вызовов
   и сохраняет `data/processed/demo_smoke/smoke_report.json`.
-- `scripts/build_defense_bundle.py` - сборка lightweight ZIP для организаторов: pitch/runbook docs, preflight JSON,
+- `scripts/build_defense_bundle.py` - сборка lightweight ZIP для организаторов: pitch/runbook/storyboard docs, preflight JSON,
   demo smoke JSON, RouterAI BGE-M3 manifests и README с командами запуска без `.env`, raw corpus и full web text.
 
 ### Поиск, источники и ранжирование
@@ -319,7 +319,8 @@ Streamlit-приложении.
   executive brief, DOCX/PDF/JSON и ZIP artifacts.
 
 Актуальный pitch/demo материал лежит в `reports/oreacle_defense_pack.md`,
-`reports/oreacle_pitch_deck.md` и `reports/oreacle_routerai_demo_script.md`.
+`reports/oreacle_pitch_deck.md`, `reports/oreacle_routerai_demo_script.md`
+и `reports/oreacle_demo_video_storyboard.md`.
 
 ### Артефакты одного run
 
