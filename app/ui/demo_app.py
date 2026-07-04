@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
+from app.query.literature import answer_literature_with_provider_router, run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
     build_orchestration_archive,
@@ -424,6 +424,8 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
             generate_pdf_report=options["generate_pdf"],
         )
         literature_run = run_literature_search(request, project_root=ROOT, yandex_client=llm_client)
+        if options["generate_answer"]:
+            answer = answer_literature_with_provider_router(query, literature_run, project_root=ROOT, max_tokens=options["answer_tokens"])
     else:
         orchestration = run_query_orchestration(
             query,
@@ -471,7 +473,7 @@ def render_sidebar() -> dict[str, Any]:
             default=DEFAULT_SEARCH_SOURCES,
             format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
         )
-        generate_answer = st.checkbox("Ответ через RouterAI", value=request_type != "Литературный поиск")
+        generate_answer = st.checkbox("Ответ через RouterAI", value=True)
         answer_tokens = st.slider("Длина ответа", min_value=300, max_value=1800, value=900, step=100)
         generate_pdf = st.checkbox("Генерировать PDF", value=True)
         comparison_insights = st.checkbox("Выводы по сравнению", value=True)
@@ -536,6 +538,13 @@ def main() -> None:
                             yandex_client=llm_client,
                         )
                         record["literature_run"] = updated
+                        if options["generate_answer"]:
+                            record["answer"] = answer_literature_with_provider_router(
+                                record.get("query") or updated.request.query,
+                                updated,
+                                project_root=ROOT,
+                                max_tokens=options["answer_tokens"],
+                            )
                         status.update(label="Deep Search готов", state="complete")
                     st.rerun()
             with col2:

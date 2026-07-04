@@ -6,6 +6,8 @@ from pathlib import Path
 
 import requests
 
+from app.llm.types import LLMResponse
+from app.query.literature import answer_literature_with_provider_router, format_literature_context
 from app.web_search.clients import (
     LiteratureSearchClient,
     dedupe_and_rank_results,
@@ -551,6 +553,88 @@ def test_overall_summary_uses_deep_search_article_summaries() -> None:
     assert "Общий вывод по статьям" in summary
     assert "Annealing improves ductility" in summary
     assert "nickel alloys" in summary
+
+
+def test_literature_context_includes_web_local_deep_and_comparison() -> None:
+    source = LiteratureSearchResult(
+        result_id="web_1",
+        source="openalex",
+        title="Nickel alloy annealing hardness",
+        year=2024,
+        url="https://example.org/paper",
+        abstract="Annealing changes hardness in nickel alloys.",
+        score=3.2,
+        keyword_hits=["nickel", "annealing"],
+    )
+    comparison = MethodComparison(
+        query="nickel annealing",
+        confirmed_methods=[{"material": "nickel alloy", "method": "annealing"}],
+        web_only_methods=[{"material": "nickel alloy", "method": "aging"}],
+        gaps=["Need numeric hardness ranges."],
+    )
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="nickel annealing", deep_search="top5"),
+        query_plan={"llm_rewrite": {"corrected_query": "nickel alloy annealing hardness"}},
+        keywords=["nickel", "annealing"],
+        results=[source],
+        local_matches=[{"title": "Local nickel procedure", "method": "annealing", "preview": "Local annealing evidence."}],
+        deep_results=[
+            DeepSearchResult(
+                result_id="web_1",
+                source_result=source,
+                status="ok",
+                llm_used=True,
+                document_summary={"summary": "Annealing modifies hardness.", "materials": ["nickel alloy"]},
+                procedure_summaries=[{"synthesis_or_process_method": "annealing", "conditions": [{"temperature": "900 C"}]}],
+            )
+        ],
+        comparison=comparison,
+    )
+
+    context = format_literature_context(run)
+
+    assert "nickel alloy annealing hardness" in context
+    assert "https://example.org/paper" in context
+    assert "Local annealing evidence" in context
+    assert "Annealing modifies hardness" in context
+    assert "Need numeric hardness ranges" in context
+
+
+def test_answer_literature_with_provider_router_passes_literature_context(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeRouter:
+        def ask(self, question: str, **kwargs: object) -> LLMResponse:
+            captured["question"] = question
+            captured.update(kwargs)
+            return LLMResponse(
+                text="literature answer",
+                provider="routerai",
+                model="deepseek/deepseek-chat-v3.1",
+                status="primary",
+                used_evidence=bool(kwargs.get("context")),
+            )
+
+    monkeypatch.setattr("app.query.literature.ProviderRouter.from_env", lambda root=None: FakeRouter())
+    source = LiteratureSearchResult(
+        result_id="crossref_1",
+        source="crossref",
+        title="Nickel ore flotation",
+        url="https://example.org/flotation",
+        abstract="Xanthate flotation improves nickel recovery.",
+    )
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="nickel ore flotation"),
+        keywords=["nickel", "flotation"],
+        results=[source],
+    )
+
+    response = answer_literature_with_provider_router("nickel ore flotation", run, project_root=tmp_path)
+
+    assert response.provider == "routerai"
+    assert captured["question"] == "nickel ore flotation"
+    assert "Xanthate flotation improves nickel recovery" in str(captured["context"])
+    assert "научно-технический аналитик" in str(captured["system_prompt"])
 
 
 def test_compare_methods_finds_shared_and_unique_methods() -> None:

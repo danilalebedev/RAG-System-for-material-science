@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from app.io_utils import write_jsonl
+from app.llm.provider_router import ProviderRouter
+from app.llm.types import LLMResponse
 from app.query import reports as report_builders
 from app.query.planner import QueryPlan, plan_query
 from app.query.rewrite import deterministic_query_rewrite, rewrite_query
@@ -25,6 +27,12 @@ from app.web_search.keywords import extract_keywords
 from app.web_search.open_access import OpenAccessResolver
 from app.web_search.resource_links import build_resource_links
 from app.web_search.schemas import LiteratureSearchRequest, LiteratureSearchRun
+
+
+LITERATURE_SYSTEM_PROMPT = """Ты научно-технический аналитик по материаловедению, металлургии и горному делу.
+Отвечай по-русски и только по переданному evidence: найденным публикациям, локальным совпадениям, Deep Search summary и comparison report.
+Не выдумывай DOI, ссылки, численные значения, условия и выводы. Если данных недостаточно, явно отдели это от подтвержденных фактов.
+Структура ответа: краткий вывод, релевантные источники со ссылками, что подтверждает локальная база, что найдено только во внешней литературе, риски/пробелы, следующие шаги."""
 
 
 def plan_keywords(plan: QueryPlan, fallback_query: str) -> list[str]:
@@ -58,6 +66,141 @@ def safe_run_id(value: str) -> str:
 def write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def compact_context_value(value: Any, max_chars: int = 900) -> str:
+    text = report_builders.compact_text(value, max_chars=max_chars)
+    return text.replace("\n", " ").strip()
+
+
+def result_url(result: Any) -> str:
+    if getattr(result, "url", None):
+        return str(result.url)
+    if getattr(result, "doi", None):
+        doi = str(result.doi).removeprefix("https://doi.org/")
+        return f"https://doi.org/{doi}"
+    return ""
+
+
+def format_literature_context(run: LiteratureSearchRun, *, max_chars: int = 18_000) -> str:
+    plan = run.query_plan or {}
+    rewrite = plan.get("llm_rewrite") if isinstance(plan.get("llm_rewrite"), dict) else {}
+    parts: list[str] = [
+        "# REQUEST",
+        f"original_query: {compact_context_value(run.request.query, 500)}",
+        f"corrected_query: {compact_context_value(rewrite.get('corrected_query') or plan.get('corrected_query') or '', 500)}",
+        f"keywords: {', '.join(run.keywords[:40])}",
+        "",
+        "# WEB RESULTS",
+    ]
+    for index, result in enumerate(run.results[:12], start=1):
+        parts.append(
+            "\n".join(
+                [
+                    f"[web:{index}] source={result.source}; score={round(float(result.score or 0.0), 4)}; year={result.year}; quartile={getattr(result, 'journal_quartile', '') or result.raw.get('journal_quartile', '')}",
+                    f"title: {compact_context_value(result.title, 350)}",
+                    f"link: {result_url(result)}",
+                    f"doi: {result.doi or ''}",
+                    f"keyword_hits: {', '.join(result.keyword_hits[:20])}",
+                    f"abstract_or_snippet: {compact_context_value(result.abstract or result.snippet or '', 900)}",
+                ]
+            )
+        )
+
+    if run.local_matches:
+        parts.extend(["", "# LOCAL MATCHES"])
+        for index, row in enumerate(run.local_matches[:10], start=1):
+            parts.append(
+                "\n".join(
+                    [
+                        f"[local:{index}] score={row.get('score')}; doc_id={compact_context_value(row.get('doc_id'), 120)}",
+                        f"title: {compact_context_value(row.get('title') or row.get('source_path') or row.get('local_path'), 350)}",
+                        f"method: {compact_context_value(row.get('method') or row.get('synthesis_or_process_method'), 250)}",
+                        f"material: {compact_context_value(row.get('material') or row.get('material_name'), 250)}",
+                        f"evidence: {compact_context_value(row.get('preview') or row.get('summary') or row, 900)}",
+                    ]
+                )
+            )
+
+    if run.deep_results:
+        parts.extend(["", "# DEEP SEARCH SUMMARIES"])
+        for index, deep_result in enumerate(run.deep_results[:8], start=1):
+            source = deep_result.source_result
+            summary = deep_result.document_summary or {}
+            parts.append(
+                "\n".join(
+                    [
+                        f"[deep:{index}] status={deep_result.status}; llm_used={deep_result.llm_used}; source={source.source}",
+                        f"title: {compact_context_value(source.title, 350)}",
+                        f"link: {result_url(source)}",
+                        f"summary: {compact_context_value(summary.get('summary') or summary.get('main_topic') or '', 1200)}",
+                        f"materials: {compact_context_value(summary.get('materials'), 400)}",
+                        f"processes: {compact_context_value(summary.get('processes') or summary.get('methods'), 400)}",
+                        f"key_findings: {compact_context_value(summary.get('key_findings') or summary.get('analysis_results'), 700)}",
+                    ]
+                )
+            )
+            for proc_index, procedure in enumerate(deep_result.procedure_summaries[:3], start=1):
+                parts.append(
+                    "\n".join(
+                        [
+                            f"[deep:{index}:procedure:{proc_index}]",
+                            f"method: {compact_context_value(procedure.get('synthesis_or_process_method') or procedure.get('method'), 250)}",
+                            f"material: {compact_context_value(procedure.get('material_name') or procedure.get('materials'), 250)}",
+                            f"conditions: {compact_context_value(procedure.get('conditions'), 700)}",
+                            f"equipment: {compact_context_value(procedure.get('equipment'), 350)}",
+                            f"outputs: {compact_context_value(procedure.get('outputs') or procedure.get('analysis_results'), 700)}",
+                            f"numeric_results: {compact_context_value(procedure.get('numeric_results') or procedure.get('analysis_results'), 700)}",
+                        ]
+                    )
+                )
+
+    if run.comparison is not None:
+        comparison = run.comparison
+        parts.extend(
+            [
+                "",
+                "# LOCAL VS WEB COMPARISON",
+                f"confirmed_methods_count: {len(comparison.confirmed_methods)}",
+                f"local_only_methods_count: {len(comparison.local_only_methods)}",
+                f"web_only_methods_count: {len(comparison.web_only_methods)}",
+                f"differing_conditions_count: {len(comparison.differing_conditions)}",
+                f"gaps: {compact_context_value(comparison.gaps, 1000)}",
+            ]
+        )
+        for section_name, rows in (
+            ("confirmed", comparison.confirmed_methods),
+            ("local_only", comparison.local_only_methods),
+            ("web_only", comparison.web_only_methods),
+            ("differing_conditions", comparison.differing_conditions),
+        ):
+            if rows:
+                parts.append(f"## {section_name}")
+            for row in rows[:5]:
+                parts.append(compact_context_value(row, 900))
+
+    text = "\n".join(parts)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 80].rstrip() + "\n\n[context truncated by max_chars]"
+
+
+def answer_literature_with_provider_router(
+    query: str,
+    run: LiteratureSearchRun,
+    *,
+    project_root: Path = PROJECT_ROOT,
+    max_tokens: int = 900,
+    temperature: float = 0.2,
+) -> LLMResponse:
+    router = ProviderRouter.from_env(root=project_root)
+    return router.ask(
+        query,
+        system_prompt=LITERATURE_SYSTEM_PROMPT,
+        context=format_literature_context(run),
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
 
 
 def write_run_outputs(run: LiteratureSearchRun, output_dir: Path) -> LiteratureSearchRun:
