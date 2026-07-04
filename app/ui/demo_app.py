@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,16 +16,25 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.query.cockpit import graphviz_dot as literature_graphviz_dot  # noqa: E402
-from app.query.literature import answer_literature_with_provider_router, run_deep_search_for_existing_run, run_literature_search  # noqa: E402
+from app.query.literature import (  # noqa: E402
+    answer_literature_with_provider_router,
+    compare_literature_with_provider_router,
+    run_deep_search_for_existing_run,
+    run_literature_search,
+    write_run_outputs,
+)
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
     build_answer_exports,
+    build_local_publications_archive,
     build_orchestration_archive,
     build_orchestration_exports,
     build_section_exports,
     build_run_archive,
+    build_web_publications_archive,
     comparison_insights,
     compact_text,
+    preferred_web_link,
     repair_mojibake,
     relevance_confidence,
     result_link,
@@ -79,22 +89,94 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
 
 
+def numeric_score(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def score_out_of_10(value: Any, max_score: float) -> float:
+    score = numeric_score(value)
+    denominator = max(max_score, score, 1.0)
+    return round(min(10.0, max(0.0, score / denominator * 10.0)), 1)
+
+
+def format_seconds(value: Any) -> str:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if seconds < 1:
+        return f"{seconds:.2f} c"
+    return f"{seconds:.1f} c"
+
+
+def add_elapsed_usage(answer: Any | None, elapsed_seconds: float) -> Any | None:
+    if answer is not None and hasattr(answer, "usage") and isinstance(answer.usage, dict):
+        answer.usage["elapsed_seconds"] = round(elapsed_seconds, 3)
+    return answer
+
+
+def answer_budget(answer: Any | None) -> dict[str, Any]:
+    return routerai_budget_summary(answer)
+
+
+def cost_label(summary: dict[str, Any]) -> str:
+    if summary.get("reported_cost_rub") is not None:
+        return f"{summary['reported_cost_rub']} ₽"
+    if summary.get("estimated_cost_rub") is not None:
+        return f"~{summary['estimated_cost_rub']} ₽"
+    return "n/a"
+
+
+def answer_metrics(record: dict[str, Any]) -> dict[str, str]:
+    answer = record.get("answer")
+    comparison_answer = record.get("comparison_answer")
+    summary = answer_budget(answer)
+    comparison_summary = answer_budget(comparison_answer)
+    total_cost = 0.0
+    has_cost = False
+    for item in (summary, comparison_summary):
+        value = item.get("reported_cost_rub")
+        if value is None:
+            value = item.get("estimated_cost_rub")
+        if value is not None:
+            total_cost += float(value)
+            has_cost = True
+    elapsed_values = [
+        numeric_score(item.get("elapsed_seconds"))
+        for item in (summary, comparison_summary)
+        if item.get("elapsed_seconds") not in (None, "")
+    ]
+    return {
+        "model": compact_text(summary.get("model") or comparison_summary.get("model") or "n/a", 80),
+        "answer_time": format_seconds(summary.get("elapsed_seconds")),
+        "comparison_time": format_seconds(comparison_summary.get("elapsed_seconds")),
+        "total_model_time": format_seconds(sum(elapsed_values)) if elapsed_values else "n/a",
+        "tokens": str(summary.get("total_tokens") or "n/a"),
+        "cost": f"~{round(total_cost, 4)} ₽" if has_cost else cost_label(summary),
+    }
+
+
 def source_rows(run: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for index, result in enumerate(getattr(run, "results", []) or [], start=1):
+    results = list(getattr(run, "results", []) or [])
+    max_score = max([numeric_score(getattr(result, "score", 0.0)) for result in results] or [1.0])
+    for index, result in enumerate(results, start=1):
         raw = getattr(result, "raw", None) or {}
         confidence = relevance_confidence(result)
         rows.append(
             {
                 "#": index,
-                "title": result.title,
-                "year": result.year,
-                "source": SEARCH_SOURCE_LABELS.get(result.source, result.source),
-                "confidence": f"{confidence['label']} ({confidence['confidence']}%)",
-                "score": round(float(result.score or 0.0), 3),
-                "quartile": getattr(result, "journal_quartile", None) or raw.get("journal_quartile") or "",
-                "why": "; ".join(confidence["reasons"]),
-                "link": result_link(result),
+                "Релевантность /10": score_out_of_10(getattr(result, "score", 0.0), max_score),
+                "Заголовок": result.title,
+                "Год": result.year,
+                "База": SEARCH_SOURCE_LABELS.get(result.source, result.source),
+                "Уверенность": f"{confidence['label']} ({confidence['confidence']}%)",
+                "Квартиль": getattr(result, "journal_quartile", None) or raw.get("journal_quartile") or "",
+                "Почему найдено": "; ".join(confidence["reasons"][:3]),
+                "Ссылка": result_link(result),
             }
         )
     return rows
@@ -102,15 +184,17 @@ def source_rows(run: Any) -> list[dict[str, Any]]:
 
 def local_rows_from_literature(run: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for index, row in enumerate(getattr(run, "local_matches", []) or [], start=1):
+    local_matches = list(getattr(run, "local_matches", []) or [])
+    max_score = max([numeric_score(row.get("score")) for row in local_matches] or [1.0])
+    for index, row in enumerate(local_matches, start=1):
         rows.append(
             {
                 "#": index,
-                "title": row.get("title") or row.get("doc_id") or row.get("source_path"),
-                "score": row.get("score"),
-                "method": row.get("method") or row.get("synthesis_or_process_method"),
-                "material": row.get("material") or row.get("material_name"),
-                "evidence": row.get("preview") or row.get("summary") or row.get("source_path"),
+                "Релевантность /10": score_out_of_10(row.get("score"), max_score),
+                "Заголовок": row.get("title") or row.get("doc_id") or row.get("source_path"),
+                "Методика": row.get("method") or row.get("synthesis_or_process_method"),
+                "Материал": row.get("material") or row.get("material_name"),
+                "Фрагмент": row.get("preview") or row.get("summary") or row.get("source_path"),
             }
         )
     return rows
@@ -414,7 +498,10 @@ def render_download(path: Path | None, label: str, mime: str) -> None:
     if not path or not Path(path).exists():
         return
     data = Path(path).read_bytes()
-    st.download_button(label, data=data, file_name=Path(path).name, mime=mime, use_container_width=True)
+    sequence = int(st.session_state.get("_download_button_sequence", 0)) + 1
+    st.session_state["_download_button_sequence"] = sequence
+    key = f"download_{sequence}_{safe_report_id(f'{label}_{Path(path)}', prefix='download')}"
+    st.download_button(label, data=data, file_name=Path(path).name, mime=mime, use_container_width=True, key=key)
 
 
 def orchestration_output_dir(record: dict[str, Any]) -> Path:
@@ -429,6 +516,111 @@ def answer_output_dir(record: dict[str, Any]) -> Path:
     return orchestration_output_dir(record) / "answer_report"
 
 
+def web_shortcut_bytes(url: str) -> bytes:
+    return f"[InternetShortcut]\r\nURL={url}\r\n".encode("utf-8")
+
+
+def render_web_source_links(run: Any | None) -> None:
+    if run is None:
+        return
+    results = list(getattr(run, "results", []) or [])
+    if not results:
+        return
+    st.markdown("**Ссылки по найденным web-источникам**")
+    for index, result in enumerate(results[:40], start=1):
+        link = preferred_web_link(result)
+        if not link:
+            continue
+        cols = st.columns([7, 1.6, 1.6])
+        cols[0].write(f"{index}. {compact_text(getattr(result, 'title', ''), 240)}")
+        if link.startswith(("http://", "https://")):
+            cols[1].link_button("Открыть", link, use_container_width=True)
+        cols[2].download_button(
+            ".url",
+            data=web_shortcut_bytes(link),
+            file_name=f"{index:02d}_web_source.url",
+            mime="application/octet-stream",
+            use_container_width=True,
+            key=f"web_source_url_{index}_{safe_report_id(getattr(result, 'result_id', index), prefix='web')}",
+        )
+
+
+def render_literature_reports(record: dict[str, Any]) -> None:
+    run = record.get("literature_run")
+    answer = record.get("answer")
+    comparison_answer = record.get("comparison_answer")
+    query = record.get("query")
+    if run is None:
+        st.info("Отчет появится после поиска.")
+        return
+
+    metrics = answer_metrics(record)
+    st.markdown("**Метрики запроса**")
+    cols = st.columns(4)
+    cols[0].metric("Ответ модели", metrics["answer_time"])
+    cols[1].metric("Сравнение", metrics["comparison_time"])
+    cols[2].metric("Токены ответа", metrics["tokens"])
+    cols[3].metric("Оценка стоимости", metrics["cost"])
+
+    if answer is not None:
+        answer_exports = build_answer_exports(
+            answer_output_dir(record),
+            query=query,
+            answer=answer,
+            run=run,
+            orchestration=None,
+        )
+        st.markdown("**Ответ и обзор**")
+        cols = st.columns(2)
+        with cols[0]:
+            render_download(answer_exports.get("pdf"), "PDF: ответ", "application/pdf")
+        with cols[1]:
+            render_download(answer_exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    if comparison_answer is not None:
+        comparison_exports = build_answer_exports(
+            answer_output_dir(record) / "comparison",
+            query=query,
+            answer=comparison_answer,
+            run=run,
+            orchestration=None,
+            prefix="comparison_review",
+        )
+        st.markdown("**Сравнение local vs web**")
+        cols = st.columns(2)
+        with cols[0]:
+            render_download(comparison_exports.get("pdf"), "PDF: сравнение", "application/pdf")
+        with cols[1]:
+            render_download(
+                comparison_exports.get("docx"),
+                "DOCX: сравнение",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+    st.markdown("**Отчеты по источникам**")
+    cols = st.columns(3)
+    with cols[0]:
+        render_download(getattr(run, "links_report_pdf_path", None), "PDF: только ссылки", "application/pdf")
+        render_download(getattr(run, "links_report_docx_path", None), "DOCX: только ссылки", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[1]:
+        render_download(getattr(run, "deep_report_pdf_path", None), "PDF: Deep Search", "application/pdf")
+        render_download(getattr(run, "deep_report_docx_path", None), "DOCX: Deep Search", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[2]:
+        render_download(getattr(run, "report_pdf_path", None), "PDF: полный отчет", "application/pdf")
+        render_download(getattr(run, "report_docx_path", None), "DOCX: полный отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    if getattr(run, "output_dir", None):
+        archive_dir = Path(run.output_dir) / "user_archives"
+        local_archive = build_local_publications_archive(run, archive_dir / "local_publications.zip", project_root=ROOT)
+        web_archive = build_web_publications_archive(run, archive_dir / "web_publication_links.zip")
+        st.markdown("**Архивы статей и ссылок**")
+        cols = st.columns(2)
+        with cols[0]:
+            render_download(local_archive, "ZIP: локальные статьи", "application/zip")
+        with cols[1]:
+            render_download(web_archive, "ZIP: web-ссылки", "application/zip")
+
+
 def render_reports(record: dict[str, Any]) -> None:
     run = record.get("literature_run")
     orchestration = record.get("orchestration")
@@ -437,8 +629,11 @@ def render_reports(record: dict[str, Any]) -> None:
     if run is None and orchestration is None:
         st.info("Отчет появится после поиска.")
         return
+    if record.get("request_type") == "Литературный поиск":
+        render_literature_reports(record)
+        return
     if answer is not None:
-        st.markdown("**RouterAI answer report**")
+        st.markdown("**Answer report**")
         answer_exports = build_answer_exports(
             answer_output_dir(record),
             query=query,
@@ -446,15 +641,11 @@ def render_reports(record: dict[str, Any]) -> None:
             run=run,
             orchestration=orchestration,
         )
-        cols = st.columns(4)
+        cols = st.columns(2)
         with cols[0]:
-            render_download(answer_exports.get("pdf"), "PDF: RouterAI ответ", "application/pdf")
+            render_download(answer_exports.get("pdf"), "PDF: ответ", "application/pdf")
         with cols[1]:
-            render_download(answer_exports.get("docx"), "DOCX: RouterAI ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        with cols[2]:
-            render_download(answer_exports.get("json"), "JSON: RouterAI answer", "application/json")
-        with cols[3]:
-            render_download(answer_exports.get("markdown"), "MD: RouterAI answer", "text/markdown")
+            render_download(answer_exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     if run is not None:
         st.markdown("**Web / literature reports**")
         cols = st.columns(3)
@@ -467,8 +658,6 @@ def render_reports(record: dict[str, Any]) -> None:
         with cols[2]:
             render_download(getattr(run, "report_pdf_path", None), "PDF: полный отчет", "application/pdf")
             render_download(getattr(run, "report_docx_path", None), "DOCX: полный отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            if getattr(run, "full_run_json_path", None):
-                render_download(run.full_run_json_path, "JSON: все данные", "application/json")
         if getattr(run, "output_dir", None):
             archive = build_run_archive(run, Path(run.output_dir) / "run_artifacts.zip", answer=answer, query=query, project_root=ROOT)
             render_download(archive, "ZIP: web/literature artifacts", "application/zip")
@@ -478,15 +667,12 @@ def render_reports(record: dict[str, Any]) -> None:
     st.markdown("**Local RAG / orchestration reports**")
     output_dir = orchestration_output_dir(record)
     full_exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer, query=query)
-    payload_path = output_dir / "orchestration_payload.json"
     archive = build_orchestration_archive(orchestration, output_dir / "orchestration_artifacts.zip", answer=answer, query=query, project_root=ROOT)
-    cols = st.columns(3)
+    cols = st.columns(2)
     with cols[0]:
         render_download(full_exports.get("pdf"), "PDF: local RAG полный", "application/pdf")
     with cols[1]:
         render_download(full_exports.get("docx"), "DOCX: local RAG полный", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    with cols[2]:
-        render_download(payload_path, "JSON: local RAG payload", "application/json")
     render_download(archive, "ZIP: local RAG artifacts", "application/zip")
 
 
@@ -501,13 +687,11 @@ def render_answer_section_exports(record: dict[str, Any]) -> None:
         run=record.get("literature_run"),
         orchestration=record.get("orchestration"),
     )
-    cols = st.columns(3)
+    cols = st.columns(2)
     with cols[0]:
         render_download(exports.get("pdf"), "PDF: ответ", "application/pdf")
     with cols[1]:
         render_download(exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    with cols[2]:
-        render_download(exports.get("json"), "JSON: answer", "application/json")
 
 
 def render_section_exports(run: Any | None, section: str, label: str) -> None:
@@ -539,11 +723,126 @@ def render_orchestration_section_exports(record: dict[str, Any], section: str, l
         render_download(exports.get("docx"), f"DOCX: RAG {label}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
+def render_literature_result(record: dict[str, Any]) -> None:
+    run = record.get("literature_run")
+    answer = record.get("answer")
+    comparison_answer = record.get("comparison_answer")
+    confidence_text, confidence_score = confidence_label(run, None)
+    metrics = answer_metrics(record)
+
+    cols = st.columns(5)
+    cols[0].metric("Web sources", len(getattr(run, "results", []) or []))
+    cols[1].metric("Local evidence", len(getattr(run, "local_matches", []) or []))
+    cols[2].metric("Deep Search summaries", len(getattr(run, "deep_results", []) or []))
+    cols[3].metric("Confidence", f"{confidence_text} ({confidence_score:.0%})")
+    cols[4].metric("Ответ модели", metrics["answer_time"])
+
+    tabs = st.tabs(["Ответ", "Источники", "Сравнение", "Графики", "Отчеты"])
+    with tabs[0]:
+        st.markdown("**Поисковая формулировка**")
+        render_table(search_context_rows(run, None), empty_text="Поисковая формулировка не найдена.")
+        st.markdown("**Ответ**")
+        if answer is not None:
+            st.markdown(compact_text(getattr(answer, "text", ""), 8000))
+            render_answer_section_exports(record)
+        elif run is not None:
+            st.write(run_overall_summary(run))
+        if run is not None and getattr(run, "deep_results", None):
+            st.markdown("**Overall Summary Deep Search**")
+            st.write(run_overall_summary(run))
+
+    with tabs[1]:
+        st.markdown("**Web-search: релевантные публикации**")
+        render_table(source_rows(run), empty_text="Web-источники не найдены.")
+        render_web_source_links(run)
+        st.markdown("**Локальный поиск: релевантные публикации**")
+        render_table(local_rows_from_literature(run), empty_text="Локальные совпадения не найдены.")
+
+    with tabs[2]:
+        st.markdown("**Сравнение локального и внешнего поиска**")
+        comparison_text = compact_text(getattr(comparison_answer, "text", ""), 8000) if comparison_answer is not None else ""
+        if not comparison_text and run is not None:
+            comparison_text = comparison_insights(run)
+        if comparison_text:
+            st.markdown(comparison_text)
+        else:
+            st.info("Сравнительный вывод отключен или пока не сгенерирован.")
+
+    with tabs[3]:
+        st.markdown("**Распределение публикаций по годам**")
+        years = table_df(year_counts(run)) if run is not None else pd.DataFrame()
+        if not years.empty:
+            years = years.rename(columns={"year": "Год", "count": "Количество"})
+            st.bar_chart(years.set_index("Год"), use_container_width=True)
+        else:
+            st.info("Нет данных по годам публикаций.")
+
+        st.markdown("**Распределение web-источников по базам данных**")
+        sources = table_df(source_counts(run)) if run is not None else pd.DataFrame()
+        if not sources.empty:
+            sources = sources.rename(columns={"source": "База", "count": "Количество"})
+            sources["База"] = sources["База"].map(lambda value: SEARCH_SOURCE_LABELS.get(value, value))
+            st.bar_chart(sources.set_index("База"), use_container_width=True)
+        else:
+            st.info("Нет данных по базам данных.")
+
+        st.markdown("**Покрытие local vs web**")
+        coverage = pd.DataFrame(
+            [
+                {"Тип": "Local", "Количество": len(getattr(run, "local_matches", []) or [])},
+                {"Тип": "Web", "Количество": len(getattr(run, "results", []) or [])},
+                {"Тип": "Deep Search", "Количество": len(getattr(run, "deep_results", []) or [])},
+            ]
+        )
+        st.bar_chart(coverage.set_index("Тип"), use_container_width=True)
+
+        st.markdown("**Скорость и стоимость модели**")
+        cols = st.columns(4)
+        cols[0].metric("Ответ", metrics["answer_time"])
+        cols[1].metric("Сравнение", metrics["comparison_time"])
+        cols[2].metric("Токены ответа", metrics["tokens"])
+        cols[3].metric("Стоимость запроса", metrics["cost"])
+
+    with tabs[4]:
+        render_reports(record)
+
+
+def generate_literature_comparison(query: str, run: Any, options: dict[str, Any]) -> tuple[Any, Any | None]:
+    if run is None or not options.get("comparison_insights"):
+        return run, None
+    try:
+        started_at = time.perf_counter()
+        comparison_answer = compare_literature_with_provider_router(
+            query,
+            run,
+            project_root=ROOT,
+            max_tokens=min(max(options.get("answer_tokens", 900), 500), 1200),
+        )
+        add_elapsed_usage(comparison_answer, time.perf_counter() - started_at)
+        query_plan = dict(getattr(run, "query_plan", {}) or {})
+        query_plan["llm_comparison_summary"] = getattr(comparison_answer, "text", "")
+        query_plan["llm_comparison_usage"] = comparison_answer.metadata() if hasattr(comparison_answer, "metadata") else {}
+        updated = run.model_copy(update={"query_plan": query_plan}, deep=True)
+        if getattr(updated, "output_dir", None):
+            updated = write_run_outputs(updated, Path(updated.output_dir))
+        return updated, comparison_answer
+    except Exception as exc:  # noqa: BLE001 - comparison should not break the whole demo query.
+        warnings = list(getattr(run, "warnings", []) or [])
+        warnings.append(f"LLM comparison skipped: {compact_text(exc, 300)}")
+        updated = run.model_copy(update={"warnings": warnings}, deep=True)
+        if getattr(updated, "output_dir", None):
+            updated = write_run_outputs(updated, Path(updated.output_dir))
+        return updated, None
+
+
 def render_result(record: dict[str, Any]) -> None:
     run = record.get("literature_run")
     orchestration = record.get("orchestration")
     answer = record.get("answer")
     request_type = record.get("request_type")
+    if request_type == "Литературный поиск":
+        render_literature_result(record)
+        return
     confidence_text, confidence_score = confidence_label(run, orchestration)
 
     cols = st.columns(4)
@@ -557,10 +856,6 @@ def render_result(record: dict[str, Any]) -> None:
         if answer is not None:
             st.markdown(compact_text(getattr(answer, "text", ""), 6000))
             render_answer_section_exports(record)
-            metadata = answer.metadata() if hasattr(answer, "metadata") else {}
-            with st.expander("Диагностика RouterAI", expanded=False):
-                render_table([routerai_budget_summary(answer)], empty_text="Нет RouterAI usage metadata.")
-                render_table([metadata], empty_text="Нет metadata по LLM.")
         elif run is not None:
             st.write(run_overall_summary(run))
             insights = comparison_insights(run)
@@ -568,10 +863,6 @@ def render_result(record: dict[str, Any]) -> None:
                 st.write(insights)
         elif orchestration is not None:
             st.text(orchestration.answer_draft)
-        st.markdown("**Как был собран ответ**")
-        render_table(workflow_summary_rows(record), empty_text="Маршрут ответа не найден.")
-        st.markdown("**Как система искала**")
-        render_table(search_context_rows(run, orchestration), empty_text="Поисковая формулировка не найдена.")
 
     with tabs[1]:
         render_section_exports(run, "sources", "источники")
@@ -648,15 +939,19 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
     literature_run = None
     orchestration = None
     answer = None
+    comparison_answer = None
     llm_client = build_router_completion_client_from_env(ROOT) if options["use_llm_rewrite"] or options["deep_search"] else None
 
     if request_type == "Литературный поиск":
         request = LiteratureSearchRequest(
             query=query,
-            top_k=options["top_k"],
+            top_k=max(options["web_top_k"], options["local_top_k"]),
+            web_top_k=options["web_top_k"],
+            local_top_k=options["local_top_k"],
             sources=options["sources"] if options["web_search"] else [],
             deep_search="top5" if options["deep_search"] else "none",
             deep_search_limit=options["deep_limit"],
+            deep_search_max_seconds=options["deep_search_max_seconds"],
             include_local_search=options["local_search"],
             materials_only=True,
             use_query_rewrite=True,
@@ -668,14 +963,17 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
         )
         literature_run = run_literature_search(request, project_root=ROOT, yandex_client=llm_client)
         if options["generate_answer"]:
+            started_at = time.perf_counter()
             answer = answer_literature_with_provider_router(query, literature_run, project_root=ROOT, max_tokens=options["answer_tokens"])
+            add_elapsed_usage(answer, time.perf_counter() - started_at)
+        literature_run, comparison_answer = generate_literature_comparison(query, literature_run, options)
     else:
         orchestration = run_query_orchestration(
             query,
             project_root=ROOT,
             include_web=options["web_search"],
             web_sources=options["sources"],
-            web_top_k=options["top_k"],
+            web_top_k=options["web_top_k"],
             web_deep_search=options["deep_search"],
             web_deep_search_limit=options["deep_limit"],
             generate_pdf_report=options["generate_pdf"],
@@ -687,7 +985,9 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
         )
         literature_run = orchestration.web_run
         if options["generate_answer"]:
+            started_at = time.perf_counter()
             answer = answer_with_provider_router(query, orchestration, project_root=ROOT, max_tokens=options["answer_tokens"])
+            add_elapsed_usage(answer, time.perf_counter() - started_at)
 
     return {
         "query": query,
@@ -696,6 +996,7 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
         "literature_run": literature_run,
         "orchestration": orchestration,
         "answer": answer,
+        "comparison_answer": comparison_answer,
     }
 
 
@@ -707,21 +1008,23 @@ def render_sidebar() -> dict[str, Any]:
         web_search = st.checkbox("Web literature search", value=True)
         deep_search = st.checkbox("Deep Search", value=False)
         deep_limit = st.slider("Статей для Deep Search", min_value=1, max_value=20, value=5)
-        top_k = st.slider("Top K", min_value=3, max_value=60, value=20)
+        web_top_k = st.slider("Web top-K", min_value=3, max_value=60, value=20)
+        local_top_k = st.slider("Local top-K", min_value=3, max_value=60, value=20)
+        sources = st.multiselect(
+            "Search resources",
+            options=ALL_SEARCH_SOURCES,
+            default=DEFAULT_SEARCH_SOURCES,
+            format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
+        )
         with st.expander("Advanced", expanded=False):
             retrieval_profile = st.selectbox("RAG profile", ["routerai_bge_m3", "yandex", "default"], index=0)
             use_llm_rewrite = st.checkbox("LLM rewrite запроса", value=True)
-            sources = st.multiselect(
-                "Search resources",
-                options=ALL_SEARCH_SOURCES,
-                default=DEFAULT_SEARCH_SOURCES,
-                format_func=lambda item: SEARCH_SOURCE_LABELS.get(item, item),
-            )
-            generate_answer = st.checkbox("Ответ через RouterAI", value=True)
+            generate_answer = st.checkbox("Генерировать ответ моделью", value=True)
             answer_tokens = st.slider("Длина ответа", min_value=300, max_value=1800, value=900, step=100)
             generate_pdf = st.checkbox("Генерировать PDF", value=True)
-            comparison_insights = st.checkbox("Выводы по сравнению", value=True)
-            fetch_excerpts = st.checkbox("Загружать безопасные excerpts", value=True)
+            comparison_insights = st.checkbox("Сравнение local vs web через LLM", value=True)
+            fetch_excerpts = st.checkbox("Загружать excerpts сайтов (медленнее)", value=False)
+            deep_search_max_seconds = st.slider("Лимит Deep Search, сек", min_value=30, max_value=900, value=180, step=30)
     return {
         "request_type": request_type,
         "retrieval_profile": None if retrieval_profile == "default" else retrieval_profile,
@@ -730,13 +1033,16 @@ def render_sidebar() -> dict[str, Any]:
         "use_llm_rewrite": use_llm_rewrite,
         "deep_search": deep_search,
         "deep_limit": deep_limit,
-        "top_k": top_k,
+        "web_top_k": web_top_k,
+        "local_top_k": local_top_k,
+        "top_k": max(web_top_k, local_top_k),
         "sources": sources or DEFAULT_SEARCH_SOURCES.copy(),
         "generate_answer": generate_answer,
         "answer_tokens": answer_tokens,
         "generate_pdf": generate_pdf,
         "comparison_insights": comparison_insights,
         "fetch_excerpts": fetch_excerpts,
+        "deep_search_max_seconds": deep_search_max_seconds,
     }
 
 
@@ -773,23 +1079,35 @@ def main() -> None:
             with col1:
                 if st.button("Запустить Deep Search по текущей выдаче", use_container_width=True):
                     with st.status("Запускаю Deep Search...", expanded=True) as status:
-                        llm_client = build_router_completion_client_from_env(ROOT)
-                        updated = run_deep_search_for_existing_run(
-                            run,
-                            project_root=ROOT,
-                            deep_search_limit=options["deep_limit"],
-                            fetch_excerpts=options["fetch_excerpts"],
-                            yandex_client=llm_client,
-                        )
-                        record["literature_run"] = updated
-                        if options["generate_answer"]:
-                            record["answer"] = answer_literature_with_provider_router(
-                                record.get("query") or updated.request.query,
-                                updated,
+                        try:
+                            started_at = time.perf_counter()
+                            llm_client = build_router_completion_client_from_env(ROOT)
+                            updated = run_deep_search_for_existing_run(
+                                run,
                                 project_root=ROOT,
-                                max_tokens=options["answer_tokens"],
+                                deep_search_limit=options["deep_limit"],
+                                deep_search_max_seconds=options["deep_search_max_seconds"],
+                                fetch_excerpts=options["fetch_excerpts"],
+                                yandex_client=llm_client,
                             )
-                        status.update(label="Deep Search готов", state="complete")
+                            record["literature_run"] = updated
+                            if options["generate_answer"]:
+                                answer_started_at = time.perf_counter()
+                                record["answer"] = answer_literature_with_provider_router(
+                                    record.get("query") or updated.request.query,
+                                    updated,
+                                    project_root=ROOT,
+                                    max_tokens=options["answer_tokens"],
+                                )
+                                add_elapsed_usage(record["answer"], time.perf_counter() - answer_started_at)
+                            updated, comparison_answer = generate_literature_comparison(record.get("query") or updated.request.query, updated, options)
+                            record["literature_run"] = updated
+                            record["comparison_answer"] = comparison_answer
+                            status.update(label=f"Deep Search готов за {format_seconds(time.perf_counter() - started_at)}", state="complete")
+                        except Exception as exc:  # noqa: BLE001 - keep Streamlit alive on external source errors.
+                            status.update(label="Deep Search не завершился", state="error")
+                            st.error(f"Deep Search остановлен: {compact_text(exc, 500)}")
+                            return
                     st.rerun()
             with col2:
                 st.write(f"Последний запрос: {record['query']}")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -27,6 +28,8 @@ MAX_LOCAL_ARCHIVE_FILES = 20
 MAX_LOCAL_ARCHIVE_BYTES = 250 * 1024 * 1024
 DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
 XML_INVALID_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF]")
+DEFAULT_ROUTERAI_PROMPT_RUB_PER_1K = 0.03
+DEFAULT_ROUTERAI_COMPLETION_RUB_PER_1K = 0.12
 
 
 def repair_mojibake(value: Any) -> str:
@@ -108,6 +111,20 @@ def source_title(row: dict[str, Any]) -> str:
 def source_link(result: Any) -> str:
     link = result_link(result)
     return link or compact_text(getattr(result, "doi", "") or getattr(result, "result_id", ""))
+
+
+def preferred_web_link(result: Any) -> str:
+    return compact_text(
+        getattr(result, "open_access_pdf_url", None)
+        or (getattr(result, "open_access", {}) or {}).get("best_pdf_url")
+        or source_link(result),
+        1000,
+    )
+
+
+def llm_comparison_summary(run: Any) -> str:
+    plan = getattr(run, "query_plan", {}) or {}
+    return compact_text(plan.get("llm_comparison_summary"), 6000)
 
 
 def result_quartile(result: Any) -> str:
@@ -236,6 +253,9 @@ def comparison_insights(run: Any) -> str:
     request = getattr(run, "request", None)
     if request is not None and not getattr(request, "generate_comparison_insights", True):
         return ""
+    llm_summary = llm_comparison_summary(run)
+    if llm_summary:
+        return llm_summary
     comparison = getattr(run, "comparison", None)
     if comparison is None:
         return "Сравнение локального и web-поиска пока недоступно: нет comparison report."
@@ -660,7 +680,7 @@ def markdown_to_pdf(text: str, output_path: Path) -> Path:
     styles = pdf_styles()
     story: list[Any] = []
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = compact_text(raw_line.strip(), 4000)
         if not line:
             story.append(Spacer(1, 0.15 * cm))
             continue
@@ -918,19 +938,36 @@ def _usage_value(usage: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def routerai_budget_summary(answer: Any | None, *, budget_rub: float = DEFAULT_ROUTERAI_BUDGET_RUB) -> dict[str, Any]:
     metadata = answer_metadata(answer)
     usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
     prompt_tokens = _usage_value(usage, "prompt_tokens", "input_tokens", "tokens_prompt")
     completion_tokens = _usage_value(usage, "completion_tokens", "output_tokens", "tokens_completion")
     total_tokens = _usage_value(usage, "total_tokens", "tokens_total", "tokens")
+    elapsed_seconds = _usage_value(usage, "elapsed_seconds", "duration_seconds", "latency_seconds")
     if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
 
     reported_cost_rub = _usage_value(usage, "cost_rub", "total_cost_rub", "amount_rub", "rub")
     reported_cost = _usage_value(usage, "cost", "total_cost", "amount")
     currency = compact_text(usage.get("currency") or usage.get("cost_currency") or usage.get("billing_currency"), 30)
+    prompt_rate = _env_float("ROUTERAI_PROMPT_RUB_PER_1K", DEFAULT_ROUTERAI_PROMPT_RUB_PER_1K)
+    completion_rate = _env_float("ROUTERAI_COMPLETION_RUB_PER_1K", DEFAULT_ROUTERAI_COMPLETION_RUB_PER_1K)
+    estimated_cost_rub = None
+    if reported_cost_rub is None:
+        if prompt_tokens is not None or completion_tokens is not None:
+            estimated_cost_rub = ((prompt_tokens or 0) / 1000.0 * prompt_rate) + ((completion_tokens or 0) / 1000.0 * completion_rate)
+        elif total_tokens is not None:
+            estimated_cost_rub = total_tokens / 1000.0 * max(prompt_rate, completion_rate)
     remaining_rub = budget_rub - reported_cost_rub if reported_cost_rub is not None else None
+    estimated_remaining_rub = budget_rub - estimated_cost_rub if estimated_cost_rub is not None else None
 
     if reported_cost_rub is not None and remaining_rub < 0:
         status = "budget_exceeded"
@@ -961,6 +998,9 @@ def routerai_budget_summary(answer: Any | None, *, budget_rub: float = DEFAULT_R
         "reported_cost": _format_numeric(reported_cost),
         "reported_cost_currency": currency,
         "reported_cost_rub": _format_numeric(reported_cost_rub),
+        "estimated_cost_rub": _format_numeric(estimated_cost_rub),
+        "estimated_remaining_budget_rub": _format_numeric(estimated_remaining_rub),
+        "elapsed_seconds": _format_numeric(elapsed_seconds),
         "remaining_budget_rub": _format_numeric(remaining_rub),
         "usage_keys": ", ".join(sorted(str(key) for key in usage.keys())) if usage else "",
         "note": note,
@@ -1011,28 +1051,30 @@ def build_answer_report_markdown(
     run: Any | None = None,
     orchestration: Any | None = None,
 ) -> str:
-    metadata = answer_metadata(answer)
     report_query = query or getattr(getattr(run, "request", None), "query", "") or (
         orchestration_query(orchestration) if orchestration is not None else ""
     )
+    budget = routerai_budget_summary(answer)
+    cost_label = "n/a"
+    if budget.get("reported_cost_rub") is not None:
+        cost_label = f"{budget['reported_cost_rub']} RUB"
+    elif budget.get("estimated_cost_rub") is not None:
+        cost_label = f"~{budget['estimated_cost_rub']} RUB"
     lines = [
-        "# RouterAI answer report",
+        "# Отчет по литературному поиску",
         "",
         f"Запрос: {compact_text(report_query, 800)}",
         "",
         "## Итоговый ответ",
         "",
-        answer_text(answer, "Ответ через RouterAI еще не был сгенерирован."),
+        answer_text(answer, "Ответ модели еще не был сгенерирован."),
         "",
-        "## Metadata",
+        "## Метрики запроса",
+        f"- Модель: {budget.get('model') or 'n/a'}",
+        f"- Время ответа: {budget.get('elapsed_seconds') or 'n/a'} с",
+        f"- Токены: {budget.get('total_tokens') or 'n/a'}",
+        f"- Стоимость: {cost_label}",
     ]
-    if metadata:
-        for key, value in metadata.items():
-            lines.append(f"- {key}: {compact_text(value, 1000)}")
-    else:
-        lines.append("- Нет metadata.")
-
-    lines.extend(["", "## RouterAI budget / usage", *format_routerai_budget_summary(answer)])
 
     links = answer_report_links(run)
     lines.extend(["", "## Релевантные web-ссылки"])
@@ -1430,6 +1472,99 @@ def write_local_files_manifest(run: Any, output_path: Path, *, project_root: Pat
             "local_files": manifest,
         },
     ), manifest
+
+
+def archive_safe_name(value: Any, *, fallback: str = "source", max_chars: int = 90) -> str:
+    text = compact_text(value, max_chars=max_chars) or fallback
+    text = XML_INVALID_CHAR_RE.sub(" ", text)
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" ._")
+    return text[:max_chars].strip(" ._") or fallback
+
+
+def unique_archive_name(name: str, used: set[str]) -> str:
+    candidate = name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    counter = 2
+    while candidate.casefold() in used:
+        candidate = f"{stem}_{counter}{suffix}"
+        counter += 1
+    used.add(candidate.casefold())
+    return candidate
+
+
+def build_local_publications_archive(
+    run: Any,
+    output_path: Path,
+    *,
+    project_root: Path | None = None,
+) -> Path:
+    project_root = project_root or PROJECT_ROOT
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path, manifest = write_local_files_manifest(
+        run,
+        output_path.with_suffix(".manifest.json"),
+        project_root=project_root,
+    )
+    del manifest_path
+    included = [item for item in manifest if item.get("status") == "included" and item.get("local_path")]
+    used_names: set[str] = set()
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        toc = "rank;title;file_name;status\n"
+        for item in manifest:
+            toc += (
+                f"{item.get('index')};"
+                f"{compact_text(item.get('title'), 400).replace(';', ',')};"
+                f"{Path(str(item.get('local_path') or '')).name};"
+                f"{item.get('status')}\n"
+            )
+        zf.writestr("sources.csv", toc.encode("utf-8-sig"))
+        for item in included:
+            source_path = Path(str(item["local_path"]))
+            if not source_path.exists() or not source_path.is_file() or not is_within(source_path, project_root):
+                continue
+            title = archive_safe_name(item.get("title") or source_path.stem, fallback=source_path.stem)
+            arcname = unique_archive_name(f"{int(item.get('index') or 0):02d}_{title}{source_path.suffix}", used_names)
+            zf.write(source_path, arcname=arcname)
+        if not included:
+            zf.writestr(
+                "README.txt",
+                "Локальные файлы для найденных публикаций не обнаружены. Проверьте sources.csv.\n".encode("utf-8"),
+            )
+    return output_path
+
+
+def build_web_publications_archive(run: Any, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    used_names: set[str] = set()
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        toc = "rank;title;year;source;link\n"
+        results = list(getattr(run, "results", []) or [])
+        for index, result in enumerate(results, start=1):
+            title = compact_text(getattr(result, "title", ""), 500)
+            link = preferred_web_link(result)
+            toc += (
+                f"{index};"
+                f"{title.replace(';', ',')};"
+                f"{getattr(result, 'year', '') or ''};"
+                f"{getattr(result, 'source', '') or ''};"
+                f"{link}\n"
+            )
+            if not link:
+                continue
+            shortcut_name = unique_archive_name(
+                f"{index:02d}_{archive_safe_name(title, fallback='web_source')}.url",
+                used_names,
+            )
+            zf.writestr(
+                shortcut_name,
+                f"[InternetShortcut]\r\nURL={link}\r\n".encode("utf-8"),
+            )
+        zf.writestr("sources.csv", toc.encode("utf-8-sig"))
+        if not results:
+            zf.writestr("README.txt", "Web-источники не найдены.\n".encode("utf-8"))
+    return output_path
 
 
 def build_run_archive(

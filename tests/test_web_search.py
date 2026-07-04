@@ -17,7 +17,7 @@ from app.web_search.clients import (
 )
 from app.web_search.comparison import compare_methods
 from app.web_search.deep_search import run_deep_search
-from app.web_search.fetch import is_safe_external_url
+from app.web_search.fetch import is_safe_external_url, safe_fetch_excerpt
 from app.web_search.keywords import extract_keywords
 from app.query.cockpit import (
     build_search_query_from_slots,
@@ -39,9 +39,11 @@ from app.query.reports import (
     build_docx_report,
     build_executive_brief_report,
     build_links_report,
+    build_local_publications_archive,
     build_pdf_report,
     build_run_archive,
     build_section_exports,
+    build_web_publications_archive,
     compact_text,
     comparison_insights,
     literature_graph_markdown,
@@ -508,6 +510,21 @@ def test_url_safety_blocks_private_and_allows_public_with_fake_resolver() -> Non
     ok, reason = is_safe_external_url("https://example.org/paper", resolver=resolver)
     assert ok is True
     assert reason is None
+
+
+def test_safe_fetch_excerpt_returns_error_on_request_exception() -> None:
+    class BrokenSession:
+        def get(self, *_args: object, **_kwargs: object) -> object:
+            raise requests.exceptions.SSLError("certificate verify failed")
+
+    fetched = safe_fetch_excerpt(
+        "https://example.org/paper",
+        session=BrokenSession(),  # type: ignore[arg-type]
+        resolver=lambda _host, port: [(None, None, None, None, ("93.184.216.34", port or 443))],
+    )
+
+    assert fetched.text == ""
+    assert "certificate verify failed" in (fetched.error or "")
 
 
 def test_deep_search_without_llm_writes_schema(tmp_path: Path) -> None:
@@ -1002,7 +1019,7 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     answer_markdown = answer_exports["markdown"].read_text(encoding="utf-8")
     assert "RouterAI synthesized literature answer" in answer_markdown
     assert "https://example.org/paper" in answer_markdown
-    assert "RouterAI budget / usage" in answer_markdown
+    assert "Метрики запроса" in answer_markdown
     answer_json = json.loads(answer_exports["json"].read_text(encoding="utf-8"))
     assert answer_json["routerai_budget"]["budget_rub"] == 1500
     assert answer_json["routerai_budget"]["total_tokens"] == 150
@@ -1026,6 +1043,18 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     assert "answer_report/routerai_answer.docx" in names
     assert "answer_report/routerai_answer.json" in names
     assert "local_publications/01_local_nickel_report.pdf" in names
+
+    local_archive = build_local_publications_archive(run, run_dir / "local_publications.zip", project_root=tmp_path)
+    web_archive = build_web_publications_archive(run, run_dir / "web_publications.zip")
+    with zipfile.ZipFile(local_archive) as zf:
+        local_names = set(zf.namelist())
+    with zipfile.ZipFile(web_archive) as zf:
+        web_names = set(zf.namelist())
+        web_shortcut = zf.read("01_Nickel alloy annealing hardness.url").decode("utf-8")
+    assert "01_Local nickel report.pdf" in local_names
+    assert "sources.csv" in local_names
+    assert "01_Nickel alloy annealing hardness.url" in web_names
+    assert "URL=https://example.org/paper" in web_shortcut
 
 
 def test_comparison_insights_can_be_disabled() -> None:

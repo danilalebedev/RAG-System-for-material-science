@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -186,17 +187,27 @@ def run_deep_search(
     fetch_excerpts: bool = True,
     session: requests.Session | None = None,
     limit: int = 5,
+    max_total_seconds: int = 180,
+    fetch_timeout_seconds: int = 6,
 ) -> list[DeepSearchResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if mode != "top5":
         return []
 
     deep_results: list[DeepSearchResult] = []
-    for result in results[:limit]:
+    started_at = time.perf_counter()
+    selected_results = results[:limit]
+    for index, result in enumerate(selected_results):
+        if time.perf_counter() - started_at >= max_total_seconds:
+            for skipped in selected_results[index:]:
+                failed = fallback_summary(skipped, status="failed")
+                failed.error = f"Deep Search time budget exceeded after {max_total_seconds} seconds."
+                deep_results.append(failed)
+            break
         fetched: FetchedExcerpt | None = None
         fetch_url = str(result.open_access_pdf_url or result.url or "")
         if fetch_excerpts and fetch_url:
-            fetched = safe_fetch_excerpt(fetch_url, session=session)
+            fetched = safe_fetch_excerpt(fetch_url, session=session, timeout_seconds=fetch_timeout_seconds)
         if client is None:
             deep_results.append(fallback_summary(result, status="no_llm_credentials", fetched=fetched))
             continue

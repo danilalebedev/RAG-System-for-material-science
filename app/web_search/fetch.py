@@ -110,7 +110,10 @@ def safe_fetch_excerpt(
     client = session or requests.Session()
     current_url = url
     for _ in range(max_redirects + 1):
-        response = client.get(current_url, timeout=timeout_seconds, stream=True, allow_redirects=False)
+        try:
+            response = client.get(current_url, timeout=timeout_seconds, stream=True, allow_redirects=False)
+        except requests.RequestException as exc:
+            return FetchedExcerpt(url=current_url, text="", content_type=None, bytes_read=0, error=f"fetch failed: {exc}")
         if response.status_code in {301, 302, 303, 307, 308}:
             location = response.headers.get("Location")
             if not location:
@@ -131,19 +134,28 @@ def safe_fetch_excerpt(
             )
         chunks: list[bytes] = []
         bytes_read = 0
-        for chunk in response.iter_content(chunk_size=16_384):
-            if not chunk:
-                continue
-            bytes_read += len(chunk)
-            if bytes_read > max_bytes:
-                return FetchedExcerpt(
-                    url=current_url,
-                    text="",
-                    content_type=response.headers.get("Content-Type"),
-                    bytes_read=bytes_read,
-                    error="payload exceeds size cap",
-                )
-            chunks.append(chunk)
+        try:
+            for chunk in response.iter_content(chunk_size=16_384):
+                if not chunk:
+                    continue
+                bytes_read += len(chunk)
+                if bytes_read > max_bytes:
+                    return FetchedExcerpt(
+                        url=current_url,
+                        text="",
+                        content_type=response.headers.get("Content-Type"),
+                        bytes_read=bytes_read,
+                        error="payload exceeds size cap",
+                    )
+                chunks.append(chunk)
+        except requests.RequestException as exc:
+            return FetchedExcerpt(
+                url=current_url,
+                text="",
+                content_type=response.headers.get("Content-Type"),
+                bytes_read=bytes_read,
+                error=f"fetch failed: {exc}",
+            )
         data = b"".join(chunks)
         content_type = response.headers.get("Content-Type", "").lower()
         try:

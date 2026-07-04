@@ -28,9 +28,12 @@ def utc_now() -> str:
 class LiteratureSearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=800)
     top_k: int = Field(default=20, ge=1, le=100)
+    web_top_k: int | None = Field(default=None, ge=1, le=100)
+    local_top_k: int | None = Field(default=None, ge=1, le=100)
     sources: list[SearchSource] = Field(default_factory=lambda: DEFAULT_SEARCH_SOURCES.copy())
     deep_search: DeepSearchMode = "none"
     deep_search_limit: int = Field(default=5, ge=1, le=20)
+    deep_search_max_seconds: int = Field(default=180, ge=30, le=900)
     language: str = Field(default="auto", max_length=32)
     include_local_search: bool = True
     materials_only: bool = True
