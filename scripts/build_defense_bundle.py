@@ -25,6 +25,7 @@ INDEX_MANIFESTS = (
 )
 OPTIONAL_FILES = (
     "data/processed/demo_preflight/preflight_report.json",
+    "data/processed/demo_smoke/smoke_report.json",
     "config/retrieval/default.json",
 )
 
@@ -124,11 +125,13 @@ def build_bundle_readme(manifest: dict[str, Any]) -> str:
         "- Demo UX / technical task notes from `tasks/04_query_gui_eval/README.md`.\n"
         "- RouterAI BGE-M3 index manifests when present.\n"
         "- Latest demo preflight report when present.\n"
+        "- Latest three-mode demo smoke report when present.\n"
         "- `bundle_manifest.json` with commit, paths, and readiness metadata.\n\n"
         "## Current Bundle Status\n\n"
         f"- Created at: {manifest.get('created_at')}\n"
         f"- Git commit: {manifest.get('git_commit') or 'n/a'}\n"
         f"- Preflight status: {manifest.get('preflight_status') or 'not included'}\n"
+        f"- Demo smoke status: {manifest.get('demo_smoke_status') or 'not included'}\n"
         f"- RouterAI budget: {manifest.get('routerai_budget_rub') or 1500} RUB\n"
     )
 
@@ -143,12 +146,15 @@ def build_defense_bundle(
     preflight_run = run_preflight(root, timeout_seconds=preflight_timeout_seconds) if run_preflight_first else None
     files, missing = collect_bundle_files(root)
     preflight_path = root / "data" / "processed" / "demo_preflight" / "preflight_report.json"
+    smoke_path = root / "data" / "processed" / "demo_smoke" / "smoke_report.json"
     preflight = read_json_if_exists(preflight_path) or {}
+    smoke_report = read_json_if_exists(smoke_path) or {}
     budget_check = next((row for row in preflight.get("checks", []) if row.get("name") == "routerai_budget_guard"), {})
     manifest = {
         "created_at": utc_now(),
         "git_commit": git_commit(root),
         "preflight_status": preflight.get("status"),
+        "demo_smoke_status": smoke_report.get("status"),
         "preflight_run": preflight_run,
         "routerai_budget_rub": budget_check.get("budget_rub", 1500),
         "included_files": [arcname for _path, arcname in files],

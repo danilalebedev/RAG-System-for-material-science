@@ -67,3 +67,10 @@ def test_run_smoke_orchestrates_three_current_modes(monkeypatch, tmp_path) -> No
     assert calls[1][0] == "Поиск методик"
     assert calls[2][0] == "Поиск свойств"
 
+
+def test_write_smoke_report_writes_utf8_json(tmp_path) -> None:
+    payload = {"status": "ok", "scenarios": [{"mode": "Поиск свойств"}]}
+    output = smoke_demo_scenarios.write_smoke_report(tmp_path / "smoke_report.json", payload)
+
+    assert output.exists()
+    assert "Поиск свойств" in output.read_text(encoding="utf-8")

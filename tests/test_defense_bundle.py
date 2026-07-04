@@ -49,6 +49,10 @@ def test_build_defense_bundle_writes_safe_zip(tmp_path: Path) -> None:
             }
         ),
     )
+    write(
+        tmp_path / "data" / "processed" / "demo_smoke" / "smoke_report.json",
+        json.dumps({"status": "ok", "scenarios": [{"mode": "Литературный поиск"}]}),
+    )
     write(tmp_path / ".env", "ROUTERAI_API_KEY=secret")
     write(tmp_path / "data" / "raw" / "secret.pdf", "raw")
 
@@ -57,6 +61,7 @@ def test_build_defense_bundle_writes_safe_zip(tmp_path: Path) -> None:
 
     assert output.exists()
     assert manifest["preflight_status"] == "pass"
+    assert manifest["demo_smoke_status"] == "ok"
     assert manifest["routerai_budget_rub"] == 1500.0
     with zipfile.ZipFile(output) as zf:
         names = set(zf.namelist())
@@ -67,7 +72,10 @@ def test_build_defense_bundle_writes_safe_zip(tmp_path: Path) -> None:
     assert "reports/oreacle_defense_pack.md" in names
     assert "reports/oreacle_pitch_deck.md" in names
     assert "data/processed/demo_preflight/preflight_report.json" in names
+    assert "data/processed/demo_smoke/smoke_report.json" in names
     assert ".env" not in names
     assert "data/raw/secret.pdf" not in names
     assert bundle_manifest["preflight_status"] == "pass"
+    assert bundle_manifest["demo_smoke_status"] == "ok"
     assert "Local URL: http://127.0.0.1:8501/" in readme
+    assert "Demo smoke status: ok" in readme

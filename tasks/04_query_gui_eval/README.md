@@ -214,9 +214,10 @@ failing the run.
 - `scripts/demo_preflight.py` - быстрый readiness check перед защитой: RouterAI key configured flag,
   `demo_app_import`, `routerai_bge_m3` manifests, Streamlit import/URL и offline search smoke по raw + summary streams.
 - `scripts/smoke_demo_scenarios.py` - product smoke для трех текущих режимов GUI: `Литературный поиск`,
-  `Поиск методик`, `Поиск свойств`; использует fake web metadata client и не делает платных LLM/web вызовов.
+  `Поиск методик`, `Поиск свойств`; использует fake web metadata client, не делает платных LLM/web вызовов
+  и сохраняет `data/processed/demo_smoke/smoke_report.json`.
 - `scripts/build_defense_bundle.py` - сборка lightweight ZIP для организаторов: pitch/runbook docs, preflight JSON,
-  RouterAI BGE-M3 manifests и README с командами запуска без `.env`, raw corpus и full web text.
+  demo smoke JSON, RouterAI BGE-M3 manifests и README с командами запуска без `.env`, raw corpus и full web text.
 
 ### Поиск, источники и ранжирование
 

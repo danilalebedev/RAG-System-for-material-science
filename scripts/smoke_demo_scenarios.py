@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -157,18 +158,28 @@ def run_smoke(*, output_root: Path) -> dict[str, Any]:
             rows.append(run_literature_smoke(query, output_root=output_root))
         else:
             rows.append(run_orchestration_smoke(mode, query))
-    return {"status": "ok", "scenarios": rows}
+    return {"status": "ok", "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "scenarios": rows}
+
+
+def write_smoke_report(path: Path, payload: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return path
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke-check the three current Oreacle demo modes without paid LLM/web calls.")
     parser.add_argument("--output-root", type=Path, default=ROOT / "data" / "processed" / "demo_smoke")
+    parser.add_argument("--output", type=Path, default=None, help="JSON report path. Defaults to <output-root>/smoke_report.json.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     payload = run_smoke(output_root=args.output_root)
+    output_path = args.output or args.output_root / "smoke_report.json"
+    write_smoke_report(output_path, payload)
+    payload = {**payload, "output": str(output_path)}
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     return 0
 
