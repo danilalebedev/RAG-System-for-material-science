@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -34,14 +36,14 @@ from app.query.reports import (  # noqa: E402
     build_web_publications_archive,
     comparison_insights,
     compact_text,
+    find_local_file,
     preferred_web_link,
     repair_mojibake,
-    relevance_confidence,
-    result_link,
     run_overall_summary,
     routerai_budget_summary,
     safe_report_id,
     source_counts,
+    source_title,
     year_counts,
 )
 from app.web_search.deep_search import build_router_completion_client_from_env  # noqa: E402
@@ -98,7 +100,7 @@ def numeric_score(value: Any) -> float:
 
 def score_out_of_10(value: Any, max_score: float) -> float:
     score = numeric_score(value)
-    denominator = max(max_score, score, 1.0)
+    denominator = max(max_score, score) if max(max_score, score) > 0 else 1.0
     return round(min(10.0, max(0.0, score / denominator * 10.0)), 1)
 
 
@@ -126,7 +128,7 @@ def cost_label(summary: dict[str, Any]) -> str:
     if summary.get("reported_cost_rub") is not None:
         return f"{summary['reported_cost_rub']} ₽"
     if summary.get("estimated_cost_rub") is not None:
-        return f"~{summary['estimated_cost_rub']} ₽"
+        return f"{summary['estimated_cost_rub']} ₽"
     return "n/a"
 
 
@@ -155,7 +157,7 @@ def answer_metrics(record: dict[str, Any]) -> dict[str, str]:
         "comparison_time": format_seconds(comparison_summary.get("elapsed_seconds")),
         "total_model_time": format_seconds(sum(elapsed_values)) if elapsed_values else "n/a",
         "tokens": str(summary.get("total_tokens") or "n/a"),
-        "cost": f"~{round(total_cost, 4)} ₽" if has_cost else cost_label(summary),
+        "cost": f"{round(total_cost, 4)} ₽" if has_cost else cost_label(summary),
     }
 
 
@@ -165,18 +167,14 @@ def source_rows(run: Any) -> list[dict[str, Any]]:
     max_score = max([numeric_score(getattr(result, "score", 0.0)) for result in results] or [1.0])
     for index, result in enumerate(results, start=1):
         raw = getattr(result, "raw", None) or {}
-        confidence = relevance_confidence(result)
         rows.append(
             {
                 "#": index,
                 "Релевантность /10": score_out_of_10(getattr(result, "score", 0.0), max_score),
-                "Заголовок": result.title,
                 "Год": result.year,
                 "База": SEARCH_SOURCE_LABELS.get(result.source, result.source),
-                "Уверенность": f"{confidence['label']} ({confidence['confidence']}%)",
-                "Квартиль": getattr(result, "journal_quartile", None) or raw.get("journal_quartile") or "",
-                "Почему найдено": "; ".join(confidence["reasons"][:3]),
-                "Ссылка": result_link(result),
+                "Q": getattr(result, "journal_quartile", None) or raw.get("journal_quartile") or "",
+                "Заголовок": result.title,
             }
         )
     return rows
@@ -192,8 +190,6 @@ def local_rows_from_literature(run: Any) -> list[dict[str, Any]]:
                 "#": index,
                 "Релевантность /10": score_out_of_10(row.get("score"), max_score),
                 "Заголовок": row.get("title") or row.get("doc_id") or row.get("source_path"),
-                "Методика": row.get("method") or row.get("synthesis_or_process_method"),
-                "Материал": row.get("material") or row.get("material_name"),
                 "Фрагмент": row.get("preview") or row.get("summary") or row.get("source_path"),
             }
         )
@@ -520,13 +516,33 @@ def web_shortcut_bytes(url: str) -> bytes:
     return f"[InternetShortcut]\r\nURL={url}\r\n".encode("utf-8")
 
 
+def render_soft_heading(text: str) -> None:
+    st.markdown(f'<div class="literature-section-title">{escape(text)}</div>', unsafe_allow_html=True)
+
+
+def render_soft_text(text: str) -> None:
+    safe = escape(compact_text(text, 8000)).replace("\n", "<br>")
+    st.markdown(f'<div class="literature-soft-text">{safe}</div>', unsafe_allow_html=True)
+
+
+def local_file_for_row(row: dict[str, Any]) -> Path | None:
+    for key in ("local_path", "source_path", "path", "file_name"):
+        value = row.get(key)
+        if not value:
+            continue
+        found = find_local_file(str(value), project_root=ROOT)
+        if found:
+            return found
+    return None
+
+
 def render_web_source_links(run: Any | None) -> None:
     if run is None:
         return
     results = list(getattr(run, "results", []) or [])
     if not results:
         return
-    st.markdown("**Ссылки по найденным web-источникам**")
+    render_soft_heading("Ссылки по найденным web-источникам")
     for index, result in enumerate(results[:40], start=1):
         link = preferred_web_link(result)
         if not link:
@@ -536,13 +552,132 @@ def render_web_source_links(run: Any | None) -> None:
         if link.startswith(("http://", "https://")):
             cols[1].link_button("Открыть", link, use_container_width=True)
         cols[2].download_button(
-            ".url",
+            "Скачать",
             data=web_shortcut_bytes(link),
             file_name=f"{index:02d}_web_source.url",
             mime="application/octet-stream",
             use_container_width=True,
             key=f"web_source_url_{index}_{safe_report_id(getattr(result, 'result_id', index), prefix='web')}",
         )
+
+
+def render_local_source_links(run: Any | None) -> None:
+    if run is None:
+        return
+    rows = list(getattr(run, "local_matches", []) or [])
+    if not rows:
+        return
+    render_soft_heading("Локальные источники")
+    shown = 0
+    for index, row in enumerate(rows[:40], start=1):
+        found = local_file_for_row(row)
+        title = source_title(row)
+        cols = st.columns([7, 1.6, 1.6])
+        cols[0].write(f"{index}. {compact_text(title, 240)}")
+        if found is None:
+            cols[1].caption("Файл не найден")
+            cols[2].caption("")
+            continue
+        shown += 1
+        cols[1].link_button("Открыть", found.resolve().as_uri(), use_container_width=True)
+        cols[2].download_button(
+            "Скачать",
+            data=found.read_bytes(),
+            file_name=found.name,
+            mime="application/octet-stream",
+            use_container_width=True,
+            key=f"local_source_file_{index}_{safe_report_id(found, prefix='local')}",
+        )
+    if shown == 0:
+        st.caption("Для найденных локальных совпадений исходные файлы пока не обнаружены.")
+
+
+def local_summary_text(run: Any | None) -> str:
+    rows = list(getattr(run, "local_matches", []) or []) if run is not None else []
+    if not rows:
+        return "Локальные источники по запросу не найдены."
+    titles = []
+    for row in rows[:6]:
+        title = source_title(row)
+        if title:
+            titles.append(title)
+    fragments = [
+        compact_text(row.get("preview") or row.get("summary") or row.get("source_path"), 260)
+        for row in rows[:4]
+        if row.get("preview") or row.get("summary") or row.get("source_path")
+    ]
+    parts = [f"Найдено локальных совпадений: {len(rows)}."]
+    if titles:
+        parts.append("Ключевые локальные работы: " + "; ".join(titles[:5]) + ".")
+    if fragments:
+        parts.append("Основные фрагменты evidence: " + " ".join(fragments))
+    return " ".join(parts)
+
+
+def web_summary_text(run: Any | None) -> str:
+    results = list(getattr(run, "results", []) or []) if run is not None else []
+    if not results:
+        return "Web-поиск не нашел внешние источники по запросу."
+    years = [int(result.year) for result in results if getattr(result, "year", None)]
+    sources = source_counts(run)
+    source_text = ", ".join(f"{SEARCH_SOURCE_LABELS.get(row['source'], row['source'])}: {row['count']}" for row in sources[:6])
+    top_titles = [compact_text(getattr(result, "title", ""), 220) for result in results[:5]]
+    parts = [f"Найдено web-источников: {len(results)}."]
+    if years:
+        parts.append(f"Период публикаций: {min(years)}-{max(years)}.")
+    if source_text:
+        parts.append(f"Базы данных: {source_text}.")
+    if top_titles:
+        parts.append("Первые релевантные работы: " + "; ".join(top_titles) + ".")
+    return " ".join(parts)
+
+
+def comparison_difference_text(run: Any | None, comparison_answer: Any | None) -> str:
+    answer_text = compact_text(getattr(comparison_answer, "text", ""), 8000) if comparison_answer is not None else ""
+    if answer_text:
+        return answer_text.replace("**", "")
+    if run is not None:
+        return comparison_insights(run).replace("**", "")
+    return "Сравнение пока не сформировано."
+
+
+def comparison_answer_sections(comparison_answer: Any | None) -> dict[str, str]:
+    text = getattr(comparison_answer, "text", "") if comparison_answer is not None else ""
+    if not text:
+        return {}
+    sections: dict[str, list[str]] = {"local": [], "web": [], "diff": []}
+    current: str | None = None
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = re.sub(r"^[#*\-\s\d.)]+", "", line).strip(" :.-").lower().replace("ё", "е")
+        if "резюме по локаль" in heading:
+            current = "local"
+            continue
+        if "резюме по web" in heading or "резюме по веб" in heading:
+            current = "web"
+            continue
+        if "сравнение источников" in heading or "поиск отличий" in heading:
+            current = "diff"
+            continue
+        if current is not None:
+            sections[current].append(line)
+    parsed = {key: compact_text("\n".join(value), 6000).replace("**", "") for key, value in sections.items() if value}
+    if parsed:
+        return parsed
+    return {"diff": compact_text(text, 6000).replace("**", "")}
+
+
+def render_comparison_blocks(run: Any | None, comparison_answer: Any | None) -> None:
+    sections = comparison_answer_sections(comparison_answer)
+    for title, text in (
+        ("Резюме по локальным источникам", sections.get("local") or local_summary_text(run)),
+        ("Резюме по web-источникам", sections.get("web") or web_summary_text(run)),
+        ("Сравнение источников: отличия и пробелы", sections.get("diff") or comparison_difference_text(run, comparison_answer)),
+    ):
+        render_soft_heading(title)
+        render_soft_text(text)
 
 
 def render_literature_reports(record: dict[str, Any]) -> None:
@@ -555,11 +690,11 @@ def render_literature_reports(record: dict[str, Any]) -> None:
         return
 
     metrics = answer_metrics(record)
-    st.markdown("**Метрики запроса**")
+    render_soft_heading("Метрики запроса")
     cols = st.columns(4)
-    cols[0].metric("Ответ модели", metrics["answer_time"])
+    cols[0].metric("Отчет модели", metrics["answer_time"])
     cols[1].metric("Сравнение", metrics["comparison_time"])
-    cols[2].metric("Токены ответа", metrics["tokens"])
+    cols[2].metric("Токены отчета", metrics["tokens"])
     cols[3].metric("Оценка стоимости", metrics["cost"])
 
     if answer is not None:
@@ -570,12 +705,12 @@ def render_literature_reports(record: dict[str, Any]) -> None:
             run=run,
             orchestration=None,
         )
-        st.markdown("**Ответ и обзор**")
+        render_soft_heading("Отчет и обзор")
         cols = st.columns(2)
         with cols[0]:
-            render_download(answer_exports.get("pdf"), "PDF: ответ", "application/pdf")
+            render_download(answer_exports.get("pdf"), "PDF: отчет", "application/pdf")
         with cols[1]:
-            render_download(answer_exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            render_download(answer_exports.get("docx"), "DOCX: отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     if comparison_answer is not None:
         comparison_exports = build_answer_exports(
@@ -586,7 +721,7 @@ def render_literature_reports(record: dict[str, Any]) -> None:
             orchestration=None,
             prefix="comparison_review",
         )
-        st.markdown("**Сравнение local vs web**")
+        render_soft_heading("Сравнение local vs web")
         cols = st.columns(2)
         with cols[0]:
             render_download(comparison_exports.get("pdf"), "PDF: сравнение", "application/pdf")
@@ -597,7 +732,7 @@ def render_literature_reports(record: dict[str, Any]) -> None:
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
-    st.markdown("**Отчеты по источникам**")
+    render_soft_heading("Отчеты по источникам")
     cols = st.columns(3)
     with cols[0]:
         render_download(getattr(run, "links_report_pdf_path", None), "PDF: только ссылки", "application/pdf")
@@ -613,7 +748,7 @@ def render_literature_reports(record: dict[str, Any]) -> None:
         archive_dir = Path(run.output_dir) / "user_archives"
         local_archive = build_local_publications_archive(run, archive_dir / "local_publications.zip", project_root=ROOT)
         web_archive = build_web_publications_archive(run, archive_dir / "web_publication_links.zip")
-        st.markdown("**Архивы статей и ссылок**")
+        render_soft_heading("Архивы статей и ссылок")
         cols = st.columns(2)
         with cols[0]:
             render_download(local_archive, "ZIP: локальные статьи", "application/zip")
@@ -643,9 +778,9 @@ def render_reports(record: dict[str, Any]) -> None:
         )
         cols = st.columns(2)
         with cols[0]:
-            render_download(answer_exports.get("pdf"), "PDF: ответ", "application/pdf")
+            render_download(answer_exports.get("pdf"), "PDF: отчет", "application/pdf")
         with cols[1]:
-            render_download(answer_exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            render_download(answer_exports.get("docx"), "DOCX: отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     if run is not None:
         st.markdown("**Web / literature reports**")
         cols = st.columns(3)
@@ -664,7 +799,7 @@ def render_reports(record: dict[str, Any]) -> None:
 
     if orchestration is None:
         return
-    st.markdown("**Local RAG / orchestration reports**")
+    render_soft_heading("Local RAG / orchestration reports")
     output_dir = orchestration_output_dir(record)
     full_exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer, query=query)
     archive = build_orchestration_archive(orchestration, output_dir / "orchestration_artifacts.zip", answer=answer, query=query, project_root=ROOT)
@@ -689,9 +824,9 @@ def render_answer_section_exports(record: dict[str, Any]) -> None:
     )
     cols = st.columns(2)
     with cols[0]:
-        render_download(exports.get("pdf"), "PDF: ответ", "application/pdf")
+        render_download(exports.get("pdf"), "PDF: отчет", "application/pdf")
     with cols[1]:
-        render_download(exports.get("docx"), "DOCX: ответ", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        render_download(exports.get("docx"), "DOCX: отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 def render_section_exports(run: Any | None, section: str, label: str) -> None:
@@ -735,58 +870,62 @@ def render_literature_result(record: dict[str, Any]) -> None:
     cols[1].metric("Local evidence", len(getattr(run, "local_matches", []) or []))
     cols[2].metric("Deep Search summaries", len(getattr(run, "deep_results", []) or []))
     cols[3].metric("Confidence", f"{confidence_text} ({confidence_score:.0%})")
-    cols[4].metric("Ответ модели", metrics["answer_time"])
+    cols[4].metric("Отчет модели", metrics["answer_time"])
 
-    tabs = st.tabs(["Ответ", "Источники", "Сравнение", "Графики", "Отчеты"])
+    tabs = st.tabs(["Отчет", "Источники", "Сравнение", "Графики", "Отчеты"])
     with tabs[0]:
-        st.markdown("**Поисковая формулировка**")
+        render_soft_heading("Поисковая формулировка")
         render_table(search_context_rows(run, None), empty_text="Поисковая формулировка не найдена.")
-        st.markdown("**Ответ**")
+        render_soft_heading("Отчет")
         if answer is not None:
-            st.markdown(compact_text(getattr(answer, "text", ""), 8000))
+            render_soft_text(getattr(answer, "text", ""))
             render_answer_section_exports(record)
         elif run is not None:
             st.write(run_overall_summary(run))
         if run is not None and getattr(run, "deep_results", None):
-            st.markdown("**Overall Summary Deep Search**")
-            st.write(run_overall_summary(run))
+            render_soft_heading("Overall Summary Deep Search")
+            render_soft_text(run_overall_summary(run))
 
     with tabs[1]:
-        st.markdown("**Web-search: релевантные публикации**")
+        render_soft_heading("Web-search: релевантные публикации")
         render_table(source_rows(run), empty_text="Web-источники не найдены.")
         render_web_source_links(run)
-        st.markdown("**Локальный поиск: релевантные публикации**")
+        render_soft_heading("Локальный поиск: релевантные публикации")
         render_table(local_rows_from_literature(run), empty_text="Локальные совпадения не найдены.")
+        render_local_source_links(run)
 
     with tabs[2]:
-        st.markdown("**Сравнение локального и внешнего поиска**")
-        comparison_text = compact_text(getattr(comparison_answer, "text", ""), 8000) if comparison_answer is not None else ""
-        if not comparison_text and run is not None:
-            comparison_text = comparison_insights(run)
-        if comparison_text:
-            st.markdown(comparison_text)
-        else:
-            st.info("Сравнительный вывод отключен или пока не сгенерирован.")
+        render_comparison_blocks(run, comparison_answer)
 
     with tabs[3]:
-        st.markdown("**Распределение публикаций по годам**")
+        render_soft_heading("Скорость и стоимость модели")
+        cols = st.columns(4)
+        cols[0].metric("Отчет", metrics["answer_time"])
+        cols[1].metric("Сравнение", metrics["comparison_time"])
+        cols[2].metric("Токены отчета", metrics["tokens"])
+        cols[3].metric("Стоимость запроса", metrics["cost"])
+
+        chart_height = 280
+        col_a, col_b = st.columns(2)
         years = table_df(year_counts(run)) if run is not None else pd.DataFrame()
-        if not years.empty:
-            years = years.rename(columns={"year": "Год", "count": "Количество"})
-            st.bar_chart(years.set_index("Год"), use_container_width=True)
-        else:
-            st.info("Нет данных по годам публикаций.")
-
-        st.markdown("**Распределение web-источников по базам данных**")
         sources = table_df(source_counts(run)) if run is not None else pd.DataFrame()
-        if not sources.empty:
-            sources = sources.rename(columns={"source": "База", "count": "Количество"})
-            sources["База"] = sources["База"].map(lambda value: SEARCH_SOURCE_LABELS.get(value, value))
-            st.bar_chart(sources.set_index("База"), use_container_width=True)
-        else:
-            st.info("Нет данных по базам данных.")
+        with col_a:
+            render_soft_heading("Публикации по годам")
+            if not years.empty:
+                years = years.rename(columns={"year": "Год", "count": "Количество"})
+                st.bar_chart(years.set_index("Год"), use_container_width=True, height=chart_height)
+            else:
+                st.info("Нет данных по годам публикаций.")
+        with col_b:
+            render_soft_heading("Web-источники по базам данных")
+            if not sources.empty:
+                sources = sources.rename(columns={"source": "База", "count": "Количество"})
+                sources["База"] = sources["База"].map(lambda value: SEARCH_SOURCE_LABELS.get(value, value))
+                st.bar_chart(sources.set_index("База"), use_container_width=True, height=chart_height)
+            else:
+                st.info("Нет данных по базам данных.")
 
-        st.markdown("**Покрытие local vs web**")
+        render_soft_heading("Покрытие local vs web")
         coverage = pd.DataFrame(
             [
                 {"Тип": "Local", "Количество": len(getattr(run, "local_matches", []) or [])},
@@ -794,14 +933,7 @@ def render_literature_result(record: dict[str, Any]) -> None:
                 {"Тип": "Deep Search", "Количество": len(getattr(run, "deep_results", []) or [])},
             ]
         )
-        st.bar_chart(coverage.set_index("Тип"), use_container_width=True)
-
-        st.markdown("**Скорость и стоимость модели**")
-        cols = st.columns(4)
-        cols[0].metric("Ответ", metrics["answer_time"])
-        cols[1].metric("Сравнение", metrics["comparison_time"])
-        cols[2].metric("Токены ответа", metrics["tokens"])
-        cols[3].metric("Стоимость запроса", metrics["cost"])
+        st.bar_chart(coverage.set_index("Тип"), use_container_width=True, height=chart_height)
 
     with tabs[4]:
         render_reports(record)
@@ -851,7 +983,7 @@ def render_result(record: dict[str, Any]) -> None:
     cols[2].metric("Deep Search summaries", len(getattr(run, "deep_results", []) or []))
     cols[3].metric("Confidence", f"{confidence_text} ({confidence_score:.0%})")
 
-    tabs = st.tabs(["Ответ", "Источники", "Сравнение", "Evidence", "Графы", "Графики", "Отчеты"])
+    tabs = st.tabs(["Отчет", "Источники", "Сравнение", "Evidence", "Графы", "Графики", "Отчеты"])
     with tabs[0]:
         if answer is not None:
             st.markdown(compact_text(getattr(answer, "text", ""), 6000))
@@ -893,7 +1025,7 @@ def render_result(record: dict[str, Any]) -> None:
         render_section_exports(run, "evidence", "evidence")
         render_orchestration_section_exports(record, "evidence", "evidence")
         if orchestration is None:
-            st.info("Local RAG evidence появится для режимов методик/свойств или при генерации ответа.")
+            st.info("Local RAG evidence появится для режимов методик/свойств или при генерации отчета.")
         else:
             st.markdown("**Raw RAG**")
             render_table(orchestration_rows(orchestration, "raw"))
@@ -1019,8 +1151,8 @@ def render_sidebar() -> dict[str, Any]:
         with st.expander("Advanced", expanded=False):
             retrieval_profile = st.selectbox("RAG profile", ["routerai_bge_m3", "yandex", "default"], index=0)
             use_llm_rewrite = st.checkbox("LLM rewrite запроса", value=True)
-            generate_answer = st.checkbox("Генерировать ответ моделью", value=True)
-            answer_tokens = st.slider("Длина ответа", min_value=300, max_value=1800, value=900, step=100)
+            generate_answer = st.checkbox("Генерировать отчет моделью", value=True)
+            answer_tokens = st.slider("Длина отчета", min_value=300, max_value=1800, value=900, step=100)
             generate_pdf = st.checkbox("Генерировать PDF", value=True)
             comparison_insights = st.checkbox("Сравнение local vs web через LLM", value=True)
             fetch_excerpts = st.checkbox("Загружать excerpts сайтов (медленнее)", value=False)
@@ -1048,6 +1180,26 @@ def render_sidebar() -> dict[str, Any]:
 
 def main() -> None:
     st.set_page_config(page_title="Oreacle", layout="wide")
+    st.markdown(
+        """
+        <style>
+        .literature-section-title {
+            font-size: 0.98rem;
+            font-weight: 400;
+            color: #cbd3df;
+            margin: 0.85rem 0 0.35rem 0;
+        }
+        .literature-soft-text {
+            font-size: 0.95rem;
+            font-weight: 400;
+            line-height: 1.55;
+            color: #c8d0dc;
+            margin-bottom: 0.85rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.title("Oreacle")
     st.caption("RAG + web literature search для материаловедения, металлургии и горного дела")
     options = render_sidebar()

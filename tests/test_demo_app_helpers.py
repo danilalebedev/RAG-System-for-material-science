@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.ui.demo_app import search_context_rows, workflow_summary_rows
+from app.ui.demo_app import answer_metrics, comparison_answer_sections, local_rows_from_literature, search_context_rows, source_rows, workflow_summary_rows
 
 
 def test_search_context_rows_are_user_facing() -> None:
@@ -97,3 +97,85 @@ def test_workflow_summary_rows_explain_orchestration_without_json() -> None:
     assert "summary extraction выполнен" in text
     assert "deepseek/deepseek-chat-v3.1" in text
     assert not any({"retrieved_context", "plan", "query_rewrite"} & set(row) for row in rows)
+
+
+def test_publication_tables_are_compact_user_facing() -> None:
+    run = SimpleNamespace(
+        results=[
+            SimpleNamespace(
+                title="Nickel mine water treatment review",
+                year=2024,
+                source="openalex",
+                score=9.5,
+                journal_quartile="Q1",
+                raw={},
+            )
+        ],
+        local_matches=[
+            {
+                "title": "Локальный обзор очистки шахтных вод",
+                "score": 0.72,
+                "preview": "Фрагмент по сорбции и нейтрализации.",
+            }
+        ],
+    )
+
+    web_rows = source_rows(run)
+    local_rows = local_rows_from_literature(run)
+
+    assert list(web_rows[0]) == ["#", "Релевантность /10", "Год", "База", "Q", "Заголовок"]
+    assert list(local_rows[0]) == ["#", "Релевантность /10", "Заголовок", "Фрагмент"]
+    assert web_rows[0]["Релевантность /10"] == 10.0
+    assert local_rows[0]["Релевантность /10"] == 10.0
+
+
+def test_comparison_answer_sections_parse_three_user_blocks() -> None:
+    answer = SimpleNamespace(
+        text="""## Резюме по локальным источникам
+Локально найдены отчеты по нейтрализации.
+
+## Резюме по web-источникам
+Во внешних источниках чаще встречается мембранная очистка.
+
+## Сравнение источников: отличия и пробелы
+Web шире покрывает зарубежные технологии, local лучше покрывает российскую практику."""
+    )
+
+    sections = comparison_answer_sections(answer)
+
+    assert "нейтрализации" in sections["local"]
+    assert "мембранная очистка" in sections["web"]
+    assert "зарубежные технологии" in sections["diff"]
+
+
+def test_answer_metrics_cost_label_has_no_approximation_prefix() -> None:
+    answer = SimpleNamespace(
+        metadata=lambda: {
+            "usage": {
+                "elapsed_seconds": 1.25,
+                "total_tokens": 1000,
+                "cost_rub": 0.5,
+            }
+        }
+    )
+
+    metrics = answer_metrics({"answer": answer, "comparison_answer": None})
+
+    assert metrics["cost"] == "0.5 ₽"
+    assert "~" not in metrics["cost"]
+
+
+def test_answer_metrics_estimates_cost_from_tokens_without_approximation_prefix() -> None:
+    answer = SimpleNamespace(
+        metadata=lambda: {
+            "usage": {
+                "elapsed_seconds": 1.25,
+                "total_tokens": 1000,
+            }
+        }
+    )
+
+    metrics = answer_metrics({"answer": answer, "comparison_answer": None})
+
+    assert "~" not in metrics["cost"]
+    assert metrics["cost"].endswith("₽")

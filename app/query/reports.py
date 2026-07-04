@@ -1059,7 +1059,7 @@ def build_answer_report_markdown(
     if budget.get("reported_cost_rub") is not None:
         cost_label = f"{budget['reported_cost_rub']} RUB"
     elif budget.get("estimated_cost_rub") is not None:
-        cost_label = f"~{budget['estimated_cost_rub']} RUB"
+        cost_label = f"{budget['estimated_cost_rub']} RUB"
     lines = [
         "# Отчет по литературному поиску",
         "",
