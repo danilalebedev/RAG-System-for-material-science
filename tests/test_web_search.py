@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import requests
@@ -36,6 +37,8 @@ from app.query.reports import (
     build_executive_brief_report,
     build_links_report,
     build_pdf_report,
+    build_run_archive,
+    build_section_exports,
     comparison_insights,
     run_overall_summary,
 )
@@ -809,6 +812,48 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
     brief_pdf = build_pdf_report(run, tmp_path / "executive_brief.pdf", mode="brief")
     assert brief_pdf.exists()
     assert brief_pdf.stat().st_size > 1000
+
+
+def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None:
+    local_root = tmp_path / "data" / "raw"
+    local_root.mkdir(parents=True)
+    local_file = local_root / "local_nickel_report.pdf"
+    local_file.write_bytes(b"%PDF-1.4\nlocal fixture\n")
+    run_dir = tmp_path / "run"
+    result = LiteratureSearchResult(
+        result_id="crossref_archive",
+        source="crossref",
+        title="Nickel alloy annealing hardness",
+        year=2024,
+        url="https://example.org/paper",
+        score=2.5,
+        keyword_hits=["nickel"],
+    )
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="nickel alloy annealing", generate_pdf_report=True),
+        query_plan={"corrected_query": "nickel alloy annealing", "search_queries": ["nickel alloy annealing materials science"]},
+        keywords=["nickel", "alloy", "annealing"],
+        results=[result],
+        local_matches=[{"doc_id": "doc1", "title": "Local nickel report", "local_path": str(local_file)}],
+        deep_results=[],
+        comparison=None,
+        output_dir=run_dir,
+    )
+
+    exports = build_section_exports(run, "sources", run_dir / "section_reports")
+    assert exports["pdf"].exists()
+    assert exports["docx"].exists()
+    assert exports["markdown"].read_text(encoding="utf-8")
+
+    archive = build_run_archive(run, run_dir / "run_artifacts.zip", project_root=tmp_path)
+    assert archive.exists()
+    with zipfile.ZipFile(archive) as zf:
+        names = set(zf.namelist())
+    assert "web_links_manifest.json" in names
+    assert "local_publication_files_manifest.json" in names
+    assert "section_reports/sources_report.pdf" in names
+    assert "section_reports/sources_report.docx" in names
+    assert "local_publications/01_local_nickel_report.pdf" in names
 
 
 def test_comparison_insights_can_be_disabled() -> None:

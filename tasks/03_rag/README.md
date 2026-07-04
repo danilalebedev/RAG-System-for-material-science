@@ -376,3 +376,56 @@ Generated outputs:
 
 RouterAI is documented as an inference fallback in
 [`../09_inference_provider_fallback/`](../09_inference_provider_fallback/), not as the primary embedding path for this step.
+
+## RouterAI BGE-M3 Parallel RAG Profile
+
+Status on 2026-07-04: a separate unified embedding profile was built on RouterAI `baai/bge-m3` without touching the
+Yandex summary index path.
+
+Purpose:
+
+- keep raw chunks and summary blocks in one 1024-dimensional embedding space;
+- provide a deployable fallback path while Yandex embedding access is unstable;
+- expose the profile as `routerai_bge_m3` for CLI and GUI selection.
+
+Generated indexes:
+
+- `data/indexes/chunks_routerai_bge_m3/` - raw dense vectors for 89,703 chunks, 1024 dimensions, backend `routerai`,
+  model `routerai://baai/bge-m3`;
+- `data/indexes/lexical_routerai_bge_m3/` - FTS/lexical index for the same 89,703 chunks;
+- `data/indexes/document_summaries_routerai_bge_m3/` - dense vectors for 1,862 document summaries;
+- `data/indexes/procedure_summaries_routerai_bge_m3/` - dense vectors for 879 procedure summaries.
+
+Build/validation commands used:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_rag_index.py `
+  --profile routerai_bge_m3 `
+  --mode hybrid `
+  --allow-network `
+  --top-k 5 `
+  --report-json data\indexes\routerai_bge_m3_validation_report.json `
+  --results-jsonl data\indexes\routerai_bge_m3_validation_results.jsonl
+
+.\.venv\Scripts\python.exe scripts\search_cli.py `
+  "никелевые сплавы термообработка твердость" `
+  --profile routerai_bge_m3 `
+  --top-k 5 `
+  --summary-top-k 5 `
+  --json
+```
+
+Observed validation:
+
+- `validate_rag_index.py` status: `pass`;
+- issue count: `0`;
+- failed queries: empty;
+- CLI smoke returned all expected retrieval streams: `raw_dense`, `raw_lexical`, `summary_lexical`,
+  `document_summary_vector`, `procedure_summary_vector`.
+
+Important constraints:
+
+- `data/indexes/*` remains ignored and should not be committed;
+- `.env`/RouterAI keys are not printed or committed;
+- this profile is parallel to the Yandex watcher outputs, so do not remove or overwrite
+  `data/indexes/document_summaries/*` and `data/indexes/procedure_summaries/*`.

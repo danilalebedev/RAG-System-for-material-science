@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from app.query.literature import run_deep_search_for_existing_run, run_literature_search  # noqa: E402
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
+    build_section_exports,
     build_run_archive,
     comparison_insights,
     compact_text,
@@ -243,6 +244,17 @@ def render_reports(run: Any | None) -> None:
         render_download(archive, "ZIP: все артефакты поиска", "application/zip")
 
 
+def render_section_exports(run: Any | None, section: str, label: str) -> None:
+    if run is None or not getattr(run, "output_dir", None):
+        return
+    exports = build_section_exports(run, section, Path(run.output_dir) / "section_reports")
+    cols = st.columns(2)
+    with cols[0]:
+        render_download(exports.get("pdf"), f"PDF: {label}", "application/pdf")
+    with cols[1]:
+        render_download(exports.get("docx"), f"DOCX: {label}", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
 def render_result(record: dict[str, Any]) -> None:
     run = record.get("literature_run")
     orchestration = record.get("orchestration")
@@ -274,6 +286,7 @@ def render_result(record: dict[str, Any]) -> None:
         render_table(rewritten_query_rows(run, orchestration), empty_text="Переформулировки не найдены.")
 
     with tabs[1]:
+        render_section_exports(run, "sources", "источники")
         st.markdown("**Web-search**")
         render_table(source_rows(run), empty_text="Web-источники не найдены.")
         st.markdown("**Локальный поиск**")
@@ -283,6 +296,7 @@ def render_result(record: dict[str, Any]) -> None:
             render_table(run.resource_links)
 
     with tabs[2]:
+        render_section_exports(run, "comparison", "сравнение")
         st.markdown("**Подтверждается локально и во внешней литературе**")
         render_table(comparison_rows(run, "confirmed_methods"))
         st.markdown("**Только локально**")
@@ -293,6 +307,7 @@ def render_result(record: dict[str, Any]) -> None:
         render_table(property_rows(run, orchestration))
 
     with tabs[3]:
+        render_section_exports(run, "evidence", "evidence")
         if orchestration is None:
             st.info("Local RAG evidence появится для режимов методик/свойств или при генерации ответа.")
         else:
@@ -316,6 +331,7 @@ def render_result(record: dict[str, Any]) -> None:
             st.graphviz_chart(method_graph_dot(run), use_container_width=True)
 
     with tabs[5]:
+        render_section_exports(run, "charts", "графики")
         years = table_df(year_counts(run)) if run is not None else pd.DataFrame()
         sources = table_df(source_counts(run)) if run is not None else pd.DataFrame()
         if not years.empty:

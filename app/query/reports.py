@@ -19,7 +19,10 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MOJIBAKE_MARKERS = ("Р", "С", "Ð", "Ñ", "в†", "В°", "Вµ")
+MAX_LOCAL_ARCHIVE_FILES = 20
+MAX_LOCAL_ARCHIVE_BYTES = 250 * 1024 * 1024
 
 
 def repair_mojibake(value: Any) -> str:
@@ -552,6 +555,112 @@ def write_json_report(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def markdown_to_docx(text: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    set_docx_style(document)
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("### "):
+            document.add_heading(line[4:], level=3)
+        elif line.startswith("## "):
+            document.add_heading(line[3:], level=2)
+        elif line.startswith("# "):
+            document.add_heading(line[2:], level=1)
+        elif line.startswith("- "):
+            document.add_paragraph(line[2:], style="List Bullet")
+        elif re.match(r"^\d+\.\s", line):
+            document.add_paragraph(line, style="List Number")
+        else:
+            document.add_paragraph(line)
+    document.save(output_path)
+    return output_path
+
+
+def markdown_to_pdf(text: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    styles = pdf_styles()
+    story: list[Any] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            story.append(Spacer(1, 0.15 * cm))
+            continue
+        if line.startswith("# "):
+            story.append(paragraph(line[2:], styles["TitleUnicode"]))
+        elif line.startswith(("## ", "### ")):
+            story.append(paragraph(line.lstrip("# "), styles["HeadingUnicode"]))
+        else:
+            story.append(paragraph(line, styles["BodyUnicode"]))
+    doc = SimpleDocTemplate(str(output_path), pagesize=A4, rightMargin=1.2 * cm, leftMargin=1.2 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm)
+    doc.build(story)
+    return output_path
+
+
+def build_section_markdown(run: Any, section: str) -> str:
+    section = section.lower().strip()
+    if section == "sources":
+        return build_links_report(run)
+    if section == "deep":
+        return build_deep_report(run)
+    if section == "charts":
+        lines = ["# Распределения публикаций", "", f"Запрос: {compact_text(run.request.query)}", "", "## По годам"]
+        lines.extend([f"- {row['year']}: {row['count']}" for row in year_counts(run)] or ["- Нет данных по годам."])
+        lines.extend(["", "## По базам данных"])
+        lines.extend([f"- {row['source']}: {row['count']}" for row in source_counts(run)] or ["- Нет данных по базам."])
+        lines.extend(["", "## Local vs web"])
+        lines.append(f"- Local matches: {len(getattr(run, 'local_matches', []) or [])}")
+        lines.append(f"- Web results: {len(getattr(run, 'results', []) or [])}")
+        lines.append(f"- Deep Search summaries: {len(getattr(run, 'deep_results', []) or [])}")
+        return "\n".join(lines).strip() + "\n"
+    if section == "comparison":
+        comparison = getattr(run, "comparison", None)
+        lines = ["# Сравнение локального и web-поиска", "", f"Запрос: {compact_text(run.request.query)}", "", comparison_insights(run)]
+        if not comparison:
+            lines.append("Comparison report пока недоступен.")
+            return "\n".join(lines).strip() + "\n"
+        buckets = [
+            ("Подтверждается локально и внешне", comparison.confirmed_methods),
+            ("Только локально", comparison.local_only_methods),
+            ("Только во внешней литературе", comparison.web_only_methods),
+            ("Разные условия или диапазоны", comparison.differing_conditions),
+        ]
+        for title, rows in buckets:
+            lines.extend(["", f"## {title}"])
+            if not rows:
+                lines.append("- Нет данных.")
+                continue
+            for index, row in enumerate(rows[:30], start=1):
+                material = compact_text(row.get("material") or row.get("title") or row.get("local_title") or row.get("web_title"), 180)
+                method = compact_text(row.get("method") or row.get("processes"), 180)
+                lines.append(f"{index}. {material}; {method}")
+        return "\n".join(lines).strip() + "\n"
+    if section == "evidence":
+        lines = ["# Evidence", "", f"Запрос: {compact_text(run.request.query)}", "", "## Локальные совпадения"]
+        for index, row in enumerate((getattr(run, "local_matches", []) or [])[:40], start=1):
+            lines.append(f"{index}. {source_title(row)} - {compact_text(row.get('preview') or row.get('source_path'), 300)}")
+        if len(lines) == 5:
+            lines.append("Локальные совпадения не найдены.")
+        lines.extend(["", "## Web evidence"])
+        for index, result in enumerate((getattr(run, "results", []) or [])[:40], start=1):
+            lines.append(f"{index}. {compact_text(result.title, 220)} - {source_link(result)}")
+        return "\n".join(lines).strip() + "\n"
+    return build_literature_report(run)
+
+
+def build_section_exports(run: Any, section: str, output_dir: Path | None = None) -> dict[str, Path]:
+    output_dir = output_dir or Path(getattr(run, "output_dir", "") or PROJECT_ROOT / "data" / "processed" / "web_search" / "section_exports")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_section = re.sub(r"[^A-Za-z0-9_.-]+", "_", section.lower()).strip("_") or "section"
+    markdown = build_section_markdown(run, safe_section)
+    md_path = write_text_report(output_dir / f"{safe_section}_report.md", markdown)
+    docx_path = markdown_to_docx(markdown, output_dir / f"{safe_section}_report.docx")
+    pdf_path = markdown_to_pdf(markdown, output_dir / f"{safe_section}_report.pdf")
+    return {"markdown": md_path, "docx": docx_path, "pdf": pdf_path}
+
+
 def write_links_csv(run: Any, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -562,10 +671,120 @@ def write_links_csv(run: Any, output_path: Path) -> Path:
     return output_path
 
 
-def build_run_archive(run: Any, output_path: Path) -> Path:
+def write_web_links_manifest(run: Any, output_path: Path) -> Path:
+    rows = []
+    for index, result in enumerate(getattr(run, "results", []) or [], start=1):
+        rows.append(
+            {
+                "index": index,
+                "title": compact_text(result.title, 600),
+                "year": result.year,
+                "source": result.source,
+                "doi": result.doi,
+                "url": source_link(result),
+                "open_access": getattr(result, "open_access", {}) or {},
+                "score": result.score,
+                "keyword_hits": result.keyword_hits,
+            }
+        )
+    return write_json_report(output_path, {"web_links": rows, "note": "Full web texts are not archived; links and extracted summaries are included."})
+
+
+def local_candidate_values(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("local_path", "source_path", "path", "file_name"):
+        value = row.get(key)
+        if value:
+            values.append(str(value))
+    return values
+
+
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def find_local_file(value: str, *, project_root: Path | None = None) -> Path | None:
+    project_root = project_root or PROJECT_ROOT
+    if not value:
+        return None
+    candidate = Path(value)
+    if candidate.is_absolute() and candidate.exists() and candidate.is_file() and is_within(candidate, project_root):
+        return candidate
+    if not candidate.is_absolute():
+        joined = project_root / candidate
+        if joined.exists() and joined.is_file() and is_within(joined, project_root):
+            return joined
+    file_name = Path(value).name
+    if not file_name:
+        return None
+    raw_root = project_root / "data" / "raw"
+    if raw_root.exists():
+        for match in raw_root.rglob(file_name):
+            if match.is_file() and is_within(match, project_root):
+                return match
+    return None
+
+
+def write_local_files_manifest(run: Any, output_path: Path, *, project_root: Path | None = None) -> tuple[Path, list[dict[str, Any]]]:
+    project_root = project_root or PROJECT_ROOT
+    manifest: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    total_bytes = 0
+    included_count = 0
+    for index, row in enumerate(getattr(run, "local_matches", []) or [], start=1):
+        found: Path | None = None
+        for value in local_candidate_values(row):
+            found = find_local_file(value, project_root=project_root)
+            if found:
+                break
+        item = {
+            "index": index,
+            "title": source_title(row),
+            "doc_id": row.get("doc_id"),
+            "source_path": row.get("source_path"),
+            "local_path": str(found) if found else row.get("local_path"),
+            "archive_path": None,
+            "status": "missing_local_file",
+        }
+        if found:
+            resolved = found.resolve()
+            size = found.stat().st_size
+            if resolved in seen:
+                item["status"] = "duplicate"
+            elif included_count >= MAX_LOCAL_ARCHIVE_FILES:
+                item["status"] = "skipped_file_limit"
+            elif total_bytes + size > MAX_LOCAL_ARCHIVE_BYTES:
+                item["status"] = "skipped_size_limit"
+            else:
+                seen.add(resolved)
+                included_count += 1
+                total_bytes += size
+                item["status"] = "included"
+                item["archive_path"] = f"local_publications/{included_count:02d}_{found.name}"
+                item["size_bytes"] = size
+        manifest.append(item)
+    return write_json_report(
+        output_path,
+        {
+            "limits": {"max_files": MAX_LOCAL_ARCHIVE_FILES, "max_bytes": MAX_LOCAL_ARCHIVE_BYTES},
+            "included_files": included_count,
+            "included_bytes": total_bytes,
+            "local_files": manifest,
+        },
+    ), manifest
+
+
+def build_run_archive(run: Any, output_path: Path, *, project_root: Path | None = None) -> Path:
+    project_root = project_root or PROJECT_ROOT
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_dir = Path(getattr(run, "output_dir", "") or output_path.parent)
     links_csv = write_links_csv(run, run_dir / "links.csv")
+    web_manifest = write_web_links_manifest(run, run_dir / "web_links_manifest.json")
+    local_manifest_path, local_manifest = write_local_files_manifest(run, run_dir / "local_publication_files_manifest.json", project_root=project_root)
     candidate_paths: list[Path] = [
         run_dir / "request.json",
         run_dir / "query_plan.json",
@@ -583,7 +802,11 @@ def build_run_archive(run: Any, output_path: Path) -> Path:
         run_dir / "web_procedure_summaries.jsonl",
         run_dir / "deep_search_results.jsonl",
         links_csv,
+        web_manifest,
+        local_manifest_path,
     ]
+    for section in ("sources", "comparison", "evidence", "charts", "deep"):
+        candidate_paths.extend(build_section_exports(run, section, run_dir / "section_reports").values())
     for attr in (
         "report_pdf_path",
         "report_docx_path",
@@ -608,4 +831,10 @@ def build_run_archive(run: Any, output_path: Path) -> Path:
             except ValueError:
                 arcname = Path(path.name)
             zf.write(path, arcname=str(arcname))
+        for item in local_manifest:
+            if item.get("status") != "included" or not item.get("archive_path") or not item.get("local_path"):
+                continue
+            source_path = Path(str(item["local_path"]))
+            if source_path.exists() and source_path.is_file() and is_within(source_path, project_root):
+                zf.write(source_path, arcname=str(item["archive_path"]))
     return output_path

@@ -307,7 +307,8 @@ def search_local_summaries(
     procedures: list[dict[str, Any]],
     top_k: int = 20,
 ) -> list[dict[str, Any]]:
-    title_by_doc = {str(row.get("doc_id")): row.get("title") for row in publications if row.get("doc_id")}
+    publication_by_doc = {str(row.get("doc_id")): row for row in publications if row.get("doc_id")}
+    title_by_doc = {doc_id: row.get("title") for doc_id, row in publication_by_doc.items()}
     candidates: list[dict[str, Any]] = []
     terms = {normalize_text(keyword) for keyword in keywords if keyword}
     if not terms:
@@ -329,11 +330,15 @@ def search_local_summaries(
         normalized = normalize_text(text)
         hits = [term for term in terms if term and term in normalized]
         if hits:
+            publication = publication_by_doc.get(str(row.get("doc_id"))) or {}
             candidates.append(
                 {
                     "kind": "document_summary",
                     "doc_id": row.get("doc_id"),
                     "title": title_by_doc.get(str(row.get("doc_id"))),
+                    "source_path": publication.get("source_path"),
+                    "local_path": publication.get("local_path"),
+                    "file_name": publication.get("file_name"),
                     "score": len(hits),
                     "keyword_hits": hits,
                     "preview": compact_text(row.get("summary"), 600),
@@ -345,11 +350,15 @@ def search_local_summaries(
         normalized = normalize_text(text)
         hits = [term for term in terms if term and term in normalized]
         if hits:
+            publication = publication_by_doc.get(str(row.get("doc_id"))) or {}
             candidates.append(
                 {
                     "kind": "procedure_summary",
                     "doc_id": row.get("doc_id"),
                     "title": title_by_doc.get(str(row.get("doc_id"))),
+                    "source_path": publication.get("source_path"),
+                    "local_path": publication.get("local_path"),
+                    "file_name": publication.get("file_name"),
                     "score": len(hits),
                     "keyword_hits": hits,
                     "preview": compact_text(row.get("key_points") or row.get("synthesis_or_process_method"), 600),
