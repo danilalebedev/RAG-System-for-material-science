@@ -39,6 +39,7 @@ from app.query.reports import (  # noqa: E402
     find_local_file,
     preferred_web_link,
     repair_mojibake,
+    report_text_blocks,
     run_overall_summary,
     routerai_budget_summary,
     safe_report_id,
@@ -525,6 +526,57 @@ def render_soft_text(text: str) -> None:
     st.markdown(f'<div class="literature-soft-text">{safe}</div>', unsafe_allow_html=True)
 
 
+def citation_url_map(run: Any | None) -> dict[str, str]:
+    if run is None:
+        return {}
+    mapping: dict[str, str] = {}
+    for index, result in enumerate(getattr(run, "results", []) or [], start=1):
+        link = preferred_web_link(result)
+        if link:
+            mapping[f"web:{index}"] = link
+    for index, row in enumerate(getattr(run, "local_matches", []) or [], start=1):
+        found = local_file_for_row(row)
+        if found:
+            mapping[f"local:{index}"] = found.resolve().as_uri()
+    return mapping
+
+
+def linkify_citations(text: str, run: Any | None) -> str:
+    links = citation_url_map(run)
+    safe = escape(compact_text(text, 3000))
+
+    def replace(match: re.Match[str]) -> str:
+        key = f"{match.group(1).lower()}:{match.group(2)}"
+        href = links.get(key)
+        label = match.group(0)
+        if not href:
+            return label
+        return f'<a href="{escape(href, quote=True)}" target="_blank">{label}</a>'
+
+    return re.sub(r"\[(web|local):(\d+)\]", replace, safe, flags=re.I)
+
+
+def render_report_body(text: str, run: Any | None) -> None:
+    blocks = report_text_blocks(text)
+    if not blocks:
+        st.info("Отчет пока не сгенерирован.")
+        return
+    for block in blocks:
+        block_text = block.get("text", "")
+        if block.get("type") == "heading":
+            render_soft_heading(block_text)
+        elif block.get("type") == "bullet":
+            st.markdown(
+                f'<div class="literature-soft-text">• {linkify_citations(block_text, run)}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div class="literature-soft-text">{linkify_citations(block_text, run)}</div>',
+                unsafe_allow_html=True,
+            )
+
+
 def local_file_for_row(row: dict[str, Any]) -> Path | None:
     for key in ("local_path", "source_path", "path", "file_name"):
         value = row.get(key)
@@ -677,7 +729,7 @@ def render_comparison_blocks(run: Any | None, comparison_answer: Any | None) -> 
         ("Сравнение источников: отличия и пробелы", sections.get("diff") or comparison_difference_text(run, comparison_answer)),
     ):
         render_soft_heading(title)
-        render_soft_text(text)
+        render_report_body(text, run)
 
 
 def render_literature_reports(record: dict[str, Any]) -> None:
@@ -688,14 +740,6 @@ def render_literature_reports(record: dict[str, Any]) -> None:
     if run is None:
         st.info("Отчет появится после поиска.")
         return
-
-    metrics = answer_metrics(record)
-    render_soft_heading("Метрики запроса")
-    cols = st.columns(4)
-    cols[0].metric("Отчет модели", metrics["answer_time"])
-    cols[1].metric("Сравнение", metrics["comparison_time"])
-    cols[2].metric("Токены отчета", metrics["tokens"])
-    cols[3].metric("Оценка стоимости", metrics["cost"])
 
     if answer is not None:
         answer_exports = build_answer_exports(
@@ -872,19 +916,20 @@ def render_literature_result(record: dict[str, Any]) -> None:
     cols[3].metric("Confidence", f"{confidence_text} ({confidence_score:.0%})")
     cols[4].metric("Отчет модели", metrics["answer_time"])
 
-    tabs = st.tabs(["Отчет", "Источники", "Сравнение", "Графики", "Отчеты"])
+    tabs = st.tabs(["Отчет", "Источники", "Графики", "Отчеты"])
     with tabs[0]:
-        render_soft_heading("Поисковая формулировка")
-        render_table(search_context_rows(run, None), empty_text="Поисковая формулировка не найдена.")
         render_soft_heading("Отчет")
         if answer is not None:
-            render_soft_text(getattr(answer, "text", ""))
+            render_report_body(getattr(answer, "text", ""), run)
             render_answer_section_exports(record)
         elif run is not None:
-            st.write(run_overall_summary(run))
+            render_report_body(run_overall_summary(run), run)
+        if comparison_answer is not None or run is not None:
+            render_soft_heading("Сравнение локальных и web-источников")
+            render_comparison_blocks(run, comparison_answer)
         if run is not None and getattr(run, "deep_results", None):
             render_soft_heading("Overall Summary Deep Search")
-            render_soft_text(run_overall_summary(run))
+            render_report_body(run_overall_summary(run), run)
 
     with tabs[1]:
         render_soft_heading("Web-search: релевантные публикации")
@@ -895,9 +940,6 @@ def render_literature_result(record: dict[str, Any]) -> None:
         render_local_source_links(run)
 
     with tabs[2]:
-        render_comparison_blocks(run, comparison_answer)
-
-    with tabs[3]:
         render_soft_heading("Скорость и стоимость модели")
         cols = st.columns(4)
         cols[0].metric("Отчет", metrics["answer_time"])
@@ -935,7 +977,7 @@ def render_literature_result(record: dict[str, Any]) -> None:
         )
         st.bar_chart(coverage.set_index("Тип"), use_container_width=True, height=chart_height)
 
-    with tabs[4]:
+    with tabs[3]:
         render_reports(record)
 
 

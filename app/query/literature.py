@@ -32,11 +32,16 @@ from app.web_search.schemas import LiteratureSearchRequest, LiteratureSearchRun
 LITERATURE_SYSTEM_PROMPT = """Ты научно-технический аналитик по материаловедению, металлургии и горному делу.
 Отвечай по-русски и только по переданному evidence: найденным публикациям, локальным совпадениям, Deep Search summary и comparison report.
 Не выдумывай DOI, ссылки, численные значения, условия и выводы. Если данных недостаточно, явно отдели это от подтвержденных фактов.
-Структура ответа: краткий вывод, релевантные источники со ссылками, что подтверждает локальная база, что найдено только во внешней литературе, риски/пробелы, следующие шаги."""
+Сделай развернутый, но читаемый отчет для бизнес-пользователя.
+Структура: 1) Краткий вывод; 2) Основные тренды и методы; 3) Резюме по локальным источникам; 4) Резюме по web-источникам; 5) Что отличается в local vs web; 6) Риски, пробелы и следующие шаги.
+В каждом содержательном разделе указывай evidence-ссылки вида [web:1], [web:2], [local:1] рядом с тезисами, если такие источники есть в контексте.
+Не используй markdown-таблицы и жирный текст."""
 
 LITERATURE_COMPARISON_PROMPT = """Сравни локальные и внешние данные по литературному поиску.
 Ответ нужен для бизнес-пользователя, без сырых JSON и служебной диагностики.
 Структура строго из трех разделов: 1) Резюме по локальным источникам; 2) Резюме по web-источникам; 3) Сравнение источников: отличия и пробелы.
+Сделай текст подробнее обычного summary: выдели основные тренды, группы методик, типовые установки/оборудование, условия применения, какие материалы подтверждают тезисы, где данные расходятся.
+В каждом разделе добавляй evidence-ссылки вида [web:1], [web:2], [local:1], если такие источники есть в контексте.
 Внутри разделов пиши короткими абзацами или списком, без markdown-таблиц и без жирного текста.
 Не выдумывай факты, диапазоны, DOI и ссылки."""
 
@@ -56,6 +61,67 @@ def plan_keywords(plan: QueryPlan, fallback_query: str) -> list[str]:
 
 def first_variant(values: list[str], fallback: str) -> str:
     return values[0] if values else fallback
+
+
+LOW_SIGNAL_RELEVANCE_TERMS = {
+    "литературный",
+    "обзор",
+    "отечественная",
+    "мировая",
+    "практика",
+    "review",
+    "literature",
+    "domestic",
+    "world",
+    "practice",
+    "цветной",
+    "цветная",
+    "цветных",
+    "метод",
+    "методы",
+    "методов",
+}
+
+
+def subject_relevance_terms(query_plan: QueryPlan, rewrite_plan: Any) -> list[str]:
+    candidates: list[str] = []
+    candidates.extend(alias for values in query_plan.entity_aliases.values() for alias in values)
+    candidates.extend(getattr(rewrite_plan, "keywords_ru", []) or [])
+    candidates.extend(getattr(rewrite_plan, "keywords_en", []) or [])
+    candidates.extend(getattr(rewrite_plan, "material_terms", []) or [])
+    candidates.extend(getattr(rewrite_plan, "process_terms", []) or [])
+    candidates.extend(getattr(rewrite_plan, "property_terms", []) or [])
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        text = compact_context_value(value, 120)
+        key = text.casefold().replace("ё", "е")
+        if not text or key in seen:
+            continue
+        key_tokens = [token for token in re.split(r"\W+", key) if token]
+        low_signal_phrase = bool(key_tokens) and all(token in LOW_SIGNAL_RELEVANCE_TERMS for token in key_tokens)
+        if key in LOW_SIGNAL_RELEVANCE_TERMS or low_signal_phrase:
+            continue
+        if len(key) < 4:
+            continue
+        result.append(text)
+        seen.add(key)
+    return result[:40]
+
+
+def subject_keywords(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = compact_context_value(value, 120)
+        key = text.casefold().replace("ё", "е")
+        key_tokens = [token for token in re.split(r"\W+", key) if token]
+        low_signal_phrase = bool(key_tokens) and all(token in LOW_SIGNAL_RELEVANCE_TERMS for token in key_tokens)
+        if not text or key in seen or key in LOW_SIGNAL_RELEVANCE_TERMS or low_signal_phrase:
+            continue
+        result.append(text)
+        seen.add(key)
+    return result
 
 
 def utc_run_id(query: str) -> str:
@@ -204,7 +270,7 @@ def answer_literature_with_provider_router(
         query,
         system_prompt=LITERATURE_SYSTEM_PROMPT,
         context=format_literature_context(run),
-        max_tokens=max_tokens,
+        max_tokens=max(max_tokens, 1300),
         temperature=temperature,
     )
 
@@ -222,7 +288,7 @@ def compare_literature_with_provider_router(
         f"Сравни локальный и внешний поиск по запросу: {query}",
         system_prompt=LITERATURE_COMPARISON_PROMPT,
         context=format_literature_context(run, max_chars=16_000),
-        max_tokens=max_tokens,
+        max_tokens=max(max_tokens, 1400),
         temperature=temperature,
     )
 
@@ -254,15 +320,28 @@ def write_run_outputs(run: LiteratureSearchRun, output_dir: Path) -> LiteratureS
     run.deep_report_markdown = deep_report
     run.executive_brief_markdown = executive_brief
     run.full_run_json_path = output_dir / "full_run.json"
-    if run.request.generate_pdf_report:
-        run.report_pdf_path = report_builders.build_pdf_report(run, output_dir / "literature_report.pdf", mode="full")
-        run.links_report_pdf_path = report_builders.build_pdf_report(run, output_dir / "literature_links_report.pdf", mode="links")
-        run.deep_report_pdf_path = report_builders.build_pdf_report(run, output_dir / "deep_search_report.pdf", mode="deep")
-        run.executive_brief_pdf_path = report_builders.build_pdf_report(run, output_dir / "executive_brief.pdf", mode="brief")
     run.report_docx_path = report_builders.build_docx_report(run, output_dir / "literature_report.docx", mode="full")
     run.links_report_docx_path = report_builders.build_docx_report(run, output_dir / "literature_links_report.docx", mode="links")
     run.deep_report_docx_path = report_builders.build_docx_report(run, output_dir / "deep_search_report.docx", mode="deep")
     run.executive_brief_docx_path = report_builders.build_docx_report(run, output_dir / "executive_brief.docx", mode="brief")
+    if run.request.generate_pdf_report:
+        run.report_pdf_path = report_builders.convert_docx_to_pdf(run.report_docx_path, output_dir / "literature_report.pdf") or report_builders.build_pdf_report(
+            run,
+            output_dir / "literature_report.pdf",
+            mode="full",
+        )
+        run.links_report_pdf_path = report_builders.convert_docx_to_pdf(
+            run.links_report_docx_path,
+            output_dir / "literature_links_report.pdf",
+        ) or report_builders.build_pdf_report(run, output_dir / "literature_links_report.pdf", mode="links")
+        run.deep_report_pdf_path = report_builders.convert_docx_to_pdf(
+            run.deep_report_docx_path,
+            output_dir / "deep_search_report.pdf",
+        ) or report_builders.build_pdf_report(run, output_dir / "deep_search_report.pdf", mode="deep")
+        run.executive_brief_pdf_path = report_builders.convert_docx_to_pdf(
+            run.executive_brief_docx_path,
+            output_dir / "executive_brief.pdf",
+        ) or report_builders.build_pdf_report(run, output_dir / "executive_brief.pdf", mode="brief")
     return run
 
 
@@ -308,6 +387,15 @@ def llm_completion_client(project_root: Path, yandex_client_arg: Any | None = No
     return build_router_completion_client_from_env(project_root)
 
 
+def optional_rewrite_client(project_root: Path, yandex_client_arg: Any | None = None) -> tuple[Any | None, list[str]]:
+    if yandex_client_arg is not None:
+        return yandex_client_arg, []
+    try:
+        return build_router_completion_client_from_env(project_root), []
+    except Exception as exc:  # noqa: BLE001 - query rewrite must not block metadata search.
+        return None, [f"LLM query rewrite unavailable, deterministic domain fallback used: {compact_context_value(exc, 220)}"]
+
+
 def run_literature_search(
     request: LiteratureSearchRequest,
     *,
@@ -317,7 +405,10 @@ def run_literature_search(
     yandex_client: Any | None = None,
 ) -> LiteratureSearchRun:
     query_plan = plan_query(request.query)
-    rewrite_client = yandex_client if request.use_llm_query_rewrite else None
+    rewrite_client = None
+    rewrite_warnings: list[str] = []
+    if request.use_llm_query_rewrite:
+        rewrite_client, rewrite_warnings = optional_rewrite_client(project_root, yandex_client)
     rewrite_plan = (
         rewrite_query(
             request.query,
@@ -328,15 +419,13 @@ def run_literature_search(
         if request.use_query_rewrite
         else deterministic_query_rewrite(request.query, materials_only=request.materials_only)
     )
-    keywords = list(
-        dict.fromkeys(
-            plan_keywords(query_plan, request.query)
-            + rewrite_plan.keywords_ru
-            + rewrite_plan.keywords_en
-            + rewrite_plan.material_terms
-            + rewrite_plan.process_terms
-            + rewrite_plan.property_terms
-        )
+    keywords = subject_keywords(
+        plan_keywords(query_plan, request.query)
+        + rewrite_plan.keywords_ru
+        + rewrite_plan.keywords_en
+        + rewrite_plan.material_terms
+        + rewrite_plan.process_terms
+        + rewrite_plan.property_terms
     )
     local_query = first_variant(query_plan.internal_search_queries, query_plan.original_query)
     web_query = rewrite_plan.corrected_query or first_variant(query_plan.web_search_queries, query_plan.original_query)
@@ -368,6 +457,7 @@ def run_literature_search(
         semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY"),
         journal_quartile_map=load_quartile_map(project_root / "config" / "web_search" / "journal_quartiles.json"),
     )
+    relevance_terms = subject_relevance_terms(query_plan, rewrite_plan)
     results, warnings = web_client.search(
         web_query,
         keywords=keywords,
@@ -375,8 +465,9 @@ def run_literature_search(
         top_k=request.web_top_k or request.top_k,
         query_variants=web_variants,
         materials_only=request.materials_only,
-        relevance_terms=[alias for values in query_plan.entity_aliases.values() for alias in values],
+        relevance_terms=relevance_terms,
     )
+    warnings = [*rewrite_warnings, *rewrite_plan.notes, *warnings]
     enrich_open_access(results, warnings, limit=min(request.web_top_k or request.top_k, 10))
     resource_links = []
     if request.include_recommended_resource_links:
@@ -412,6 +503,7 @@ def run_literature_search(
             **query_plan.model_dump(mode="json"),
             "original_user_query": request.query,
             "llm_rewrite": rewrite_plan.model_dump(mode="json"),
+            "subject_relevance_terms": relevance_terms,
         },
         keywords=keywords,
         results=results,

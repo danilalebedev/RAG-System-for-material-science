@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -295,7 +297,6 @@ def build_links_report(run: Any) -> str:
         "# Отчет по релевантным ссылкам",
         "",
         f"Запрос: {compact_text(run.request.query)}",
-        f"Поисковая формулировка: {display_query(run)}",
         "",
         "## Web-search",
     ]
@@ -368,7 +369,6 @@ def build_literature_report(run: Any) -> str:
         "# Полный отчет по поиску литературы",
         "",
         f"Запрос: {compact_text(run.request.query)}",
-        f"Поисковая формулировка: {display_query(run)}",
         f"Ключевые слова: {', '.join(compact_text(item, 80) for item in getattr(run, 'keywords', []) or []) or 'n/a'}",
         f"Внешние результаты: {len(getattr(run, 'results', []) or [])}",
         f"Локальные совпадения: {len(getattr(run, 'local_matches', []) or [])}",
@@ -520,6 +520,31 @@ def add_count_table(story: list[Any], title: str, headers: list[str], rows: list
     story.append(table)
 
 
+def add_pdf_table(story: list[Any], headers: list[str], rows: list[list[Any]], styles: dict[str, ParagraphStyle]) -> None:
+    if not rows:
+        return
+    table_rows: list[list[Any]] = [[paragraph(header, styles["SmallUnicode"]) for header in headers]]
+    for row in rows:
+        table_rows.append([paragraph(value, styles["SmallUnicode"]) for value in row[: len(headers)]])
+    if len(headers) == 5:
+        col_widths = [0.7 * cm, 6.9 * cm, 1.3 * cm, 2.0 * cm, 5.2 * cm]
+    elif len(headers) == 3:
+        col_widths = [0.7 * cm, 6.5 * cm, 8.9 * cm]
+    else:
+        col_widths = [16.1 * cm / max(len(headers), 1)] * len(headers)
+    table = Table(table_rows, colWidths=col_widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c8cdd6")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    story.append(table)
+
+
 def build_pdf_report(run: Any, output_path: Path, *, mode: str = "full") -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     styles = pdf_styles()
@@ -532,7 +557,6 @@ def build_pdf_report(run: Any, output_path: Path, *, mode: str = "full") -> Path
     }
     story.append(paragraph(titles.get(mode, "Отчет по поиску литературы"), styles["TitleUnicode"]))
     story.append(paragraph(f"Запрос: {run.request.query}", styles["BodyUnicode"]))
-    story.append(paragraph(f"Поисковая формулировка: {display_query(run)}", styles["BodyUnicode"]))
 
     if mode in {"full", "brief", "deep"}:
         story.append(Spacer(1, 0.25 * cm))
@@ -591,7 +615,6 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
     }
     document.add_heading(titles.get(mode, "Отчет по поиску литературы"), level=1)
     document.add_paragraph(f"Запрос: {compact_text(run.request.query)}")
-    document.add_paragraph(f"Поисковая формулировка: {compact_text(display_query(run))}")
 
     if mode in {"full", "brief", "deep"}:
         document.add_heading("Общий вывод", level=2)
@@ -1044,6 +1067,148 @@ def answer_report_links(run: Any | None, *, limit: int = 25) -> list[dict[str, A
     return rows
 
 
+def clean_report_text(value: Any, max_chars: int | None = None) -> str:
+    text = repair_mojibake(value)
+    text = XML_INVALID_CHAR_RE.sub(" ", text)
+    text = text.replace("**", "")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    cleaned = "\n".join(line for line in lines if line)
+    if max_chars is not None and len(cleaned) > max_chars:
+        return cleaned[: max_chars - 3].rstrip() + "..."
+    return cleaned
+
+
+def report_text_blocks(text: Any) -> list[dict[str, str]]:
+    cleaned = clean_report_text(text, 20_000)
+    blocks: list[dict[str, str]] = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = ""
+        if line.startswith("### "):
+            heading = line[4:].strip()
+        elif line.startswith("## "):
+            heading = line[3:].strip()
+        elif line.startswith("# "):
+            heading = line[2:].strip()
+        else:
+            match = re.match(r"^(?:\d+[.)]\s*)?([А-ЯA-ZЁ][^.!?]{2,90})[:：]$", line)
+            if match:
+                heading = match.group(1).strip()
+        if heading:
+            blocks.append({"type": "heading", "text": compact_text(heading, 180)})
+            continue
+        if line.startswith(("- ", "* ", "• ")):
+            blocks.append({"type": "bullet", "text": compact_text(line[2:], 1200)})
+        else:
+            blocks.append({"type": "paragraph", "text": compact_text(line, 1800)})
+    return blocks
+
+
+def answer_report_sections(
+    *,
+    query: str | None,
+    answer: Any | None,
+    run: Any | None = None,
+    orchestration: Any | None = None,
+) -> list[dict[str, Any]]:
+    report_query = query or getattr(getattr(run, "request", None), "query", "") or (
+        orchestration_query(orchestration) if orchestration is not None else ""
+    )
+    raw_answer = getattr(answer, "text", None) if answer is not None else None
+    if raw_answer in (None, ""):
+        raw_answer = "Отчет модели еще не был сгенерирован."
+    sections: list[dict[str, Any]] = [
+        {
+            "title": "Отчет по литературному поиску",
+            "paragraphs": [f"Запрос: {compact_text(report_query, 800)}"] if report_query else [],
+            "blocks": report_text_blocks(raw_answer),
+        }
+    ]
+
+    links = answer_report_links(run)
+    sections.append(
+        {
+            "title": "Ключевые web-источники",
+            "paragraphs": [] if links else ["Web-источники не найдены."],
+            "table": {
+                "headers": ["#", "Заголовок", "Ссылка"],
+                "rows": [
+                    [
+                        str(row["index"]),
+                        row["title"],
+                        row.get("link") or "",
+                    ]
+                    for row in links[:20]
+                ],
+            }
+            if links
+            else None,
+        }
+    )
+
+    if run is not None:
+        local_rows = getattr(run, "local_matches", []) or []
+        sections.append(
+            {
+                "title": "Ключевые локальные источники",
+                "paragraphs": [] if local_rows else ["Локальные источники по запросу не найдены."],
+                "table": {
+                    "headers": ["#", "Источник"],
+                    "rows": [
+                        [
+                            str(index),
+                            source_title(row),
+                        ]
+                        for index, row in enumerate(local_rows[:20], start=1)
+                    ],
+                }
+                if local_rows
+                else None,
+            }
+        )
+
+    if run is not None and getattr(run, "deep_results", None):
+        deep_blocks: list[dict[str, str]] = []
+        for index, item in enumerate((getattr(run, "deep_results", []) or [])[:20], start=1):
+            summary = getattr(item, "document_summary", {}) or {}
+            source = getattr(item, "source_result", None)
+            title = compact_text(getattr(source, "title", "") if source is not None else "", 260)
+            link = source_link(source) if source is not None else ""
+            deep_blocks.append({"type": "heading", "text": f"{index}. {title}"})
+            if link:
+                deep_blocks.append({"type": "paragraph", "text": f"Ссылка: {link}"})
+            deep_blocks.append(
+                {
+                    "type": "paragraph",
+                    "text": compact_text(summary.get("summary") or summary.get("main_topic") or "Summary не извлечен.", 1400),
+                }
+            )
+        sections.append({"title": "Deep Search summaries", "paragraphs": [], "blocks": deep_blocks})
+
+    if orchestration is not None:
+        rows = orchestration_all_rows(orchestration)
+        data_rows = [row for row in rows if row.get("source_type") != "diagnostics"]
+        evidence_blocks: list[dict[str, str]] = []
+        for index, row in enumerate(data_rows[:25], start=1):
+            locator = row_locator(row)
+            locator_text = f"; {locator}" if locator else ""
+            evidence_blocks.append({"type": "heading", "text": f"{index}. {row_title(row)}{locator_text}"})
+            preview = compact_text(row.get("preview") or row.get("summary") or row.get("path"), 900)
+            if preview:
+                evidence_blocks.append({"type": "paragraph", "text": preview})
+        sections.append(
+            {
+                "title": "Local RAG evidence",
+                "paragraphs": [] if evidence_blocks else ["Local RAG evidence не найден."],
+                "blocks": evidence_blocks,
+            }
+        )
+
+    return sections
+
+
 def build_answer_report_markdown(
     *,
     query: str | None,
@@ -1051,70 +1216,95 @@ def build_answer_report_markdown(
     run: Any | None = None,
     orchestration: Any | None = None,
 ) -> str:
-    report_query = query or getattr(getattr(run, "request", None), "query", "") or (
-        orchestration_query(orchestration) if orchestration is not None else ""
-    )
-    budget = routerai_budget_summary(answer)
-    cost_label = "n/a"
-    if budget.get("reported_cost_rub") is not None:
-        cost_label = f"{budget['reported_cost_rub']} RUB"
-    elif budget.get("estimated_cost_rub") is not None:
-        cost_label = f"{budget['estimated_cost_rub']} RUB"
-    lines = [
-        "# Отчет по литературному поиску",
-        "",
-        f"Запрос: {compact_text(report_query, 800)}",
-        "",
-        "## Итоговый ответ",
-        "",
-        answer_text(answer, "Ответ модели еще не был сгенерирован."),
-        "",
-        "## Метрики запроса",
-        f"- Модель: {budget.get('model') or 'n/a'}",
-        f"- Время ответа: {budget.get('elapsed_seconds') or 'n/a'} с",
-        f"- Токены: {budget.get('total_tokens') or 'n/a'}",
-        f"- Стоимость: {cost_label}",
-    ]
-
-    links = answer_report_links(run)
-    lines.extend(["", "## Релевантные web-ссылки"])
-    if links:
-        for row in links:
-            confidence = row.get("confidence") or {}
-            suffix = f"; confidence={confidence.get('label')} {confidence.get('confidence')}%; score={row['score']}" if row.get("score") not in (None, "") else ""
-            lines.append(f"{row['index']}. {row['title']} ({row.get('source') or 'source'}, {row.get('year') or 'n/a'}){suffix}")
-            if row.get("link"):
-                lines.append(f"   - {row['link']}")
-    else:
-        lines.append("- Web-ссылки не найдены.")
-
-    if run is not None and getattr(run, "deep_results", None):
-        lines.extend(["", "## Deep Search summary"])
-        for index, item in enumerate((getattr(run, "deep_results", []) or [])[:20], start=1):
-            summary = getattr(item, "document_summary", {}) or {}
-            source = getattr(item, "source_result", None)
-            title = compact_text(getattr(source, "title", "") if source is not None else "", 260)
-            link = source_link(source) if source is not None else ""
-            lines.append(f"{index}. {title}")
-            if link:
-                lines.append(f"   - {link}")
-            lines.append(f"   - {compact_text(summary.get('summary') or summary.get('main_topic') or 'Summary не извлечен.', 1200)}")
-
-    if orchestration is not None:
-        rows = orchestration_all_rows(orchestration)
-        lines.extend(["", "## Local RAG evidence"])
-        data_rows = [row for row in rows if row.get("source_type") != "diagnostics"]
-        if not data_rows:
-            lines.append("- Local RAG evidence не найден.")
-        for index, row in enumerate(data_rows[:25], start=1):
-            locator = row_locator(row)
-            locator_text = f"; {locator}" if locator else ""
-            lines.append(f"{index}. {row_title(row)}{locator_text}")
-            preview = compact_text(row.get("preview") or row.get("summary") or row.get("path"), 600)
-            if preview:
-                lines.append(f"   - {preview}")
-
+    lines: list[str] = []
+    for section in answer_report_sections(query=query, answer=answer, run=run, orchestration=orchestration):
+        lines.extend([f"## {section['title']}", ""])
+        for paragraph_text in section.get("paragraphs") or []:
+            lines.extend([compact_text(paragraph_text, 1800), ""])
+        for block in section.get("blocks") or []:
+            if block["type"] == "heading":
+                lines.extend([f"### {block['text']}", ""])
+            elif block["type"] == "bullet":
+                lines.append(f"- {block['text']}")
+            else:
+                lines.extend([block["text"], ""])
+        table = section.get("table")
+        if table:
+            headers = table["headers"]
+            lines.append(" | ".join(headers))
+            lines.append(" | ".join("---" for _ in headers))
+            for row in table["rows"]:
+                lines.append(" | ".join(compact_text(value, 700) for value in row))
+            lines.append("")
     return "\n".join(lines).strip() + "\n"
+
+
+def build_answer_docx_from_sections(sections: list[dict[str, Any]], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    set_docx_style(document)
+    for index, section in enumerate(sections):
+        document.add_heading(compact_text(section["title"], 220), level=1 if index == 0 else 2)
+        for paragraph_text in section.get("paragraphs") or []:
+            document.add_paragraph(compact_text(paragraph_text, 1800))
+        for block in section.get("blocks") or []:
+            if block["type"] == "heading":
+                document.add_heading(compact_text(block["text"], 220), level=3)
+            elif block["type"] == "bullet":
+                document.add_paragraph(compact_text(block["text"], 1400), style="List Bullet")
+            else:
+                document.add_paragraph(compact_text(block["text"], 1800))
+        table = section.get("table")
+        if table:
+            add_docx_table(document, table["headers"], table["rows"])
+    document.save(output_path)
+    return output_path
+
+
+def build_answer_pdf_from_sections(sections: list[dict[str, Any]], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    styles = pdf_styles()
+    story: list[Any] = []
+    for index, section in enumerate(sections):
+        story.append(paragraph(section["title"], styles["TitleUnicode"] if index == 0 else styles["HeadingUnicode"]))
+        for paragraph_text in section.get("paragraphs") or []:
+            story.append(paragraph(paragraph_text, styles["BodyUnicode"]))
+        for block in section.get("blocks") or []:
+            if block["type"] == "heading":
+                story.append(paragraph(block["text"], styles["HeadingUnicode"]))
+            elif block["type"] == "bullet":
+                story.append(paragraph(f"• {block['text']}", styles["BodyUnicode"]))
+            else:
+                story.append(paragraph(block["text"], styles["BodyUnicode"]))
+        table = section.get("table")
+        if table and table.get("rows"):
+            story.append(Spacer(1, 0.1 * cm))
+            add_pdf_table(story, table["headers"], table["rows"], styles)
+        story.append(Spacer(1, 0.25 * cm))
+    doc = SimpleDocTemplate(str(output_path), pagesize=A4, rightMargin=1.2 * cm, leftMargin=1.2 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm)
+    doc.build(story)
+    return output_path
+
+
+def convert_docx_to_pdf(docx_path: Path, output_path: Path) -> Path | None:
+    executable = shutil.which("soffice") or shutil.which("libreoffice")
+    if not executable:
+        return None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [executable, "--headless", "--convert-to", "pdf", "--outdir", str(output_path.parent), str(docx_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=90,
+        )
+    except Exception:  # noqa: BLE001 - report export should fall back to the internal PDF renderer.
+        return None
+    converted = output_path.parent / f"{docx_path.stem}.pdf"
+    if converted.exists() and converted != output_path:
+        converted.replace(output_path)
+    return output_path if output_path.exists() else None
 
 
 def build_answer_exports(
@@ -1128,10 +1318,14 @@ def build_answer_exports(
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", prefix.lower()).strip("_") or "routerai_answer"
+    sections = answer_report_sections(query=query, answer=answer, run=run, orchestration=orchestration)
     markdown = build_answer_report_markdown(query=query, answer=answer, run=run, orchestration=orchestration)
     md_path = write_text_report(output_dir / f"{safe_prefix}.md", markdown)
-    pdf_path = markdown_to_pdf(markdown, output_dir / f"{safe_prefix}.pdf")
-    docx_path = markdown_to_docx(markdown, output_dir / f"{safe_prefix}.docx")
+    docx_path = build_answer_docx_from_sections(sections, output_dir / f"{safe_prefix}.docx")
+    pdf_path = convert_docx_to_pdf(docx_path, output_dir / f"{safe_prefix}.pdf") or build_answer_pdf_from_sections(
+        sections,
+        output_dir / f"{safe_prefix}.pdf",
+    )
     json_path = write_json_report(
         output_dir / f"{safe_prefix}.json",
         {

@@ -426,6 +426,22 @@ def test_deterministic_query_rewrite_scopes_materials_search() -> None:
     assert "твердость" in plan.all_keywords
 
 
+def test_mine_water_review_query_rewrite_is_domain_specific() -> None:
+    query = "Выполнить литературный обзор методов очистки шахтных вод горно-рудных предприятий цветной металлургии. Отечественная и мировая практика."
+    keywords = extract_keywords(query, max_keywords=20)
+    plan = deterministic_query_rewrite(query, materials_only=True)
+    joined_queries = " ".join(plan.search_queries).casefold()
+
+    assert "acid mine drainage" in joined_queries
+    assert "mine water treatment" in joined_queries
+    assert "non-ferrous metallurgy" in joined_queries
+    assert "литературный" not in keywords
+    assert "обзор" not in keywords
+    assert "мировая" not in keywords
+    assert "цветной" not in keywords
+    assert "очистки" in keywords or "очистка" in keywords
+
+
 def test_materials_only_filter_removes_non_domain_results() -> None:
     domain = LiteratureSearchResult(
         result_id="a",
@@ -441,6 +457,30 @@ def test_materials_only_filter_removes_non_domain_results() -> None:
     )
     ranked = dedupe_and_rank_results([domain, unrelated], ["nickel"], top_k=10, materials_only=True)
     assert [item.result_id for item in ranked] == ["a"]
+
+
+def test_mine_water_relevance_terms_remove_real_estate_review() -> None:
+    relevant = LiteratureSearchResult(
+        result_id="mine_water",
+        source="openalex",
+        title="Acid mine drainage treatment for non-ferrous metallurgy",
+        abstract="Mine water treatment removes heavy metals from mining wastewater.",
+    )
+    unrelated = LiteratureSearchResult(
+        result_id="real_estate",
+        source="crossref",
+        title="Сравнительный анализ традиционных методов оценки недвижимости: мировая и отечественная практика",
+        abstract="Статья посвящена оценке недвижимости и рынку жилья.",
+    )
+    ranked = dedupe_and_rank_results(
+        [unrelated, relevant],
+        ["очистка", "шахтные воды", "mine water"],
+        top_k=10,
+        materials_only=True,
+        relevance_terms=["mine water treatment", "acid mine drainage", "цветная металлургия", "heavy metal removal"],
+    )
+
+    assert [item.result_id for item in ranked] == ["mine_water"]
 
 
 def test_journal_quartile_boost_increases_score() -> None:
@@ -1019,7 +1059,7 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     answer_markdown = answer_exports["markdown"].read_text(encoding="utf-8")
     assert "RouterAI synthesized literature answer" in answer_markdown
     assert "https://example.org/paper" in answer_markdown
-    assert "Метрики запроса" in answer_markdown
+    assert "Метрики запроса" not in answer_markdown
     answer_json = json.loads(answer_exports["json"].read_text(encoding="utf-8"))
     assert answer_json["routerai_budget"]["budget_rub"] == 1500
     assert answer_json["routerai_budget"]["total_tokens"] == 150
