@@ -4,6 +4,7 @@ import json
 import zipfile
 from pathlib import Path
 
+from scripts import build_defense_bundle as defense_bundle_module
 from scripts.build_defense_bundle import build_defense_bundle, collect_bundle_files
 
 
@@ -79,3 +80,37 @@ def test_build_defense_bundle_writes_safe_zip(tmp_path: Path) -> None:
     assert bundle_manifest["demo_smoke_status"] == "ok"
     assert "Local URL: http://127.0.0.1:8501/" in readme
     assert "Demo smoke status: ok" in readme
+
+
+def test_build_defense_bundle_can_refresh_demo_smoke(tmp_path: Path, monkeypatch) -> None:
+    for rel_path in (
+        "reports/oreacle_defense_pack.md",
+        "reports/oreacle_pitch_deck.md",
+        "reports/oreacle_routerai_demo_script.md",
+        "reports/oreacle_marketing_demo_plan.md",
+        "tasks/04_query_gui_eval/README.md",
+    ):
+        write(tmp_path / rel_path, rel_path)
+
+    def fake_run_demo_smoke(root: Path, *, timeout_seconds: int) -> dict:
+        assert timeout_seconds == 7
+        write(
+            root / "data" / "processed" / "demo_smoke" / "smoke_report.json",
+            json.dumps({"status": "ok", "scenarios": [{"mode": "methods"}]}),
+        )
+        return {"returncode": 0, "stdout_preview": "smoke ok", "stderr_preview": ""}
+
+    monkeypatch.setattr(defense_bundle_module, "run_demo_smoke", fake_run_demo_smoke)
+
+    output = tmp_path / "bundle.zip"
+    manifest = build_defense_bundle(tmp_path, output, run_smoke_first=True, smoke_timeout_seconds=7)
+
+    assert manifest["demo_smoke_status"] == "ok"
+    assert manifest["demo_smoke_run"]["returncode"] == 0
+    with zipfile.ZipFile(output) as zf:
+        names = set(zf.namelist())
+        bundle_manifest = json.loads(zf.read("bundle_manifest.json").decode("utf-8"))
+
+    assert "data/processed/demo_smoke/smoke_report.json" in names
+    assert bundle_manifest["demo_smoke_status"] == "ok"
+    assert bundle_manifest["demo_smoke_run"]["stdout_preview"] == "smoke ok"

@@ -109,6 +109,31 @@ def run_preflight(root: Path, *, timeout_seconds: int) -> dict[str, Any]:
     }
 
 
+def run_demo_smoke(root: Path, *, timeout_seconds: int) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(root / "scripts" / "smoke_demo_scenarios.py"),
+        "--output-root",
+        str(root / "data" / "processed" / "demo_smoke"),
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(timeout_seconds, 30),
+        check=False,
+    )
+    return {
+        "command": command,
+        "returncode": completed.returncode,
+        "stdout_preview": (completed.stdout or "")[:2000],
+        "stderr_preview": (completed.stderr or "")[:2000],
+    }
+
+
 def build_bundle_readme(manifest: dict[str, Any]) -> str:
     return (
         "# Oreacle Defense Bundle\n\n"
@@ -118,6 +143,7 @@ def build_bundle_readme(manifest: dict[str, Any]) -> str:
         "```powershell\n"
         ".\\.venv\\Scripts\\python.exe scripts\\run_demo_app.py --background --address 127.0.0.1\n"
         ".\\.venv\\Scripts\\python.exe scripts\\demo_preflight.py\n"
+        ".\\.venv\\Scripts\\python.exe scripts\\smoke_demo_scenarios.py\n"
         "```\n\n"
         "Local URL: http://127.0.0.1:8501/\n\n"
         "## Included\n\n"
@@ -142,8 +168,11 @@ def build_defense_bundle(
     *,
     run_preflight_first: bool = False,
     preflight_timeout_seconds: int = 20,
+    run_smoke_first: bool = False,
+    smoke_timeout_seconds: int = 180,
 ) -> dict[str, Any]:
     preflight_run = run_preflight(root, timeout_seconds=preflight_timeout_seconds) if run_preflight_first else None
+    smoke_run = run_demo_smoke(root, timeout_seconds=smoke_timeout_seconds) if run_smoke_first else None
     files, missing = collect_bundle_files(root)
     preflight_path = root / "data" / "processed" / "demo_preflight" / "preflight_report.json"
     smoke_path = root / "data" / "processed" / "demo_smoke" / "smoke_report.json"
@@ -156,6 +185,7 @@ def build_defense_bundle(
         "preflight_status": preflight.get("status"),
         "demo_smoke_status": smoke_report.get("status"),
         "preflight_run": preflight_run,
+        "demo_smoke_run": smoke_run,
         "routerai_budget_rub": budget_check.get("budget_rub", 1500),
         "included_files": [arcname for _path, arcname in files],
         "missing_files": missing,
@@ -180,6 +210,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--run-preflight", action="store_true", help="Refresh demo_preflight report before packaging.")
     parser.add_argument("--preflight-timeout-seconds", type=int, default=20)
+    parser.add_argument("--run-smoke", action="store_true", help="Refresh three-mode demo smoke report before packaging.")
+    parser.add_argument("--smoke-timeout-seconds", type=int, default=180)
     return parser.parse_args()
 
 
@@ -192,6 +224,8 @@ def main() -> int:
         output,
         run_preflight_first=args.run_preflight,
         preflight_timeout_seconds=args.preflight_timeout_seconds,
+        run_smoke_first=args.run_smoke,
+        smoke_timeout_seconds=args.smoke_timeout_seconds,
     )
     print(json.dumps({"status": "pass", "output": manifest["output_path"], "size_bytes": manifest["output_size_bytes"]}, ensure_ascii=False, indent=2))
     return 0
