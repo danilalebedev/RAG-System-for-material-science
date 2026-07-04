@@ -2,7 +2,14 @@
 
 from app.llm.types import LLMResponse
 from app.query.local_orchestrator import first_query
-from app.query.orchestrator import QueryOrchestrationResult, RetrievedContext, answer_with_provider_router, run_query_orchestration
+from app.query.orchestrator import (
+    QueryOrchestrationResult,
+    RetrievedContext,
+    answer_with_provider_router,
+    run_query_orchestration,
+    split_indexed_summary_rows,
+    trim_rows_keep_diagnostics,
+)
 from app.query.planner import plan_query
 
 
@@ -86,15 +93,76 @@ def test_query_plan_search_strings_do_not_include_slot_noise() -> None:
     assert first_query(noisy, "summary_rag", noisy.original_query) == "nickel ore"
 
 
+def test_indexed_summary_rows_are_split_from_raw_stream() -> None:
+    raw, summaries = split_indexed_summary_rows(
+        [
+            {"id": "raw:1", "source_type": "raw_chunk", "title": "Raw"},
+            {"id": "document_summary:1", "source_type": "document_summary", "title": "Summary"},
+            {"id": "procedure_summary:1", "source_type": "procedure_summary", "title": "Procedure"},
+            {"id": "raw_rag:diagnostics", "source_type": "diagnostics"},
+        ]
+    )
+    assert [row["id"] for row in raw] == ["raw:1", "raw_rag:diagnostics"]
+    assert [row["id"] for row in summaries] == ["document_summary:1", "procedure_summary:1"]
+    assert summaries[0]["kind"] == "document_summary"
+
+
+def test_trim_rows_keep_diagnostics_preserves_stream_metadata() -> None:
+    rows = [
+        {"id": "raw:1", "source_type": "raw_chunk"},
+        {"id": "raw:2", "source_type": "raw_chunk"},
+        {"id": "raw_rag:diagnostics", "source_type": "diagnostics"},
+    ]
+    assert [row["id"] for row in trim_rows_keep_diagnostics(rows, limit=1)] == ["raw:1", "raw_rag:diagnostics"]
+
+
 def test_orchestrator_returns_structured_result_with_fallbacks(tmp_path) -> None:
     result = run_query_orchestration("compare nickel leaching at 80 C", project_root=tmp_path, include_web=False)
     payload = result.as_dict()
-    assert set(payload) == {"plan", "retrieved_context", "evidence", "answer_draft", "fallbacks", "local_diagnostics"}
+    assert set(payload) == {"plan", "retrieved_context", "evidence", "answer_draft", "fallbacks", "local_diagnostics", "query_rewrite"}
     assert set(payload["retrieved_context"]) == {"raw", "summaries", "tables", "graph", "web"}
     assert payload["plan"]["intent"] == "compare_methods"
     assert isinstance(payload["evidence"], list)
     assert payload["answer_draft"]
     assert any(item["route"] in {"raw_rag", "summary_rag"} for item in payload["fallbacks"])
+    assert payload["query_rewrite"]["corrected_query"] == "compare nickel leaching at 80 C"
+
+
+def test_orchestrator_applies_llm_rewrite_to_local_rag_routes(tmp_path) -> None:
+    class FakeRewriteClient:
+        model_uri = "fake-routerai"
+
+        def complete(self, prompt: str) -> tuple[str, dict[str, object]]:
+            return (
+                """
+                {
+                  "corrected_query": "nickel alloys annealing hardness",
+                  "search_queries": ["nickel alloys heat treatment hardness"],
+                  "keywords_ru": ["никелевые сплавы", "твердость"],
+                  "keywords_en": ["nickel alloys", "hardness"],
+                  "material_terms": ["nickel alloys"],
+                  "process_terms": ["annealing", "heat treatment"],
+                  "property_terms": ["hardness"],
+                  "filters": {"materials_only": true}
+                }
+                """,
+                {},
+            )
+
+    result = run_query_orchestration(
+        "найди режимы термообработки для никелевых сплавов",
+        project_root=tmp_path,
+        include_web=False,
+        required_routes=["raw_rag", "summary_rag"],
+        use_llm_query_rewrite=True,
+        rewrite_client=FakeRewriteClient(),
+    )
+
+    assert result.query_rewrite is not None
+    assert result.query_rewrite["rewrite_used_llm"] is True
+    assert result.plan.rewritten_queries.raw_rag[0] == "nickel alloys annealing hardness"
+    assert result.plan.rewritten_queries.summary_rag[0] == "nickel alloys annealing hardness"
+    assert result.local_diagnostics["actual_local_query"] == "nickel alloys annealing hardness"
 
 
 def test_nickel_ore_query_uses_phrase_aliases_and_forced_routes() -> None:

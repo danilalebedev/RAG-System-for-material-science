@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from app.index.embeddings import apply_retrieval_profile, load_retrieval_config
 from app.llm.provider_router import ProviderRouter
 from app.llm.types import LLMResponse
@@ -20,7 +22,9 @@ from app.query.local_orchestrator import (
     search_summaries,
 )
 from app.query.planner import QueryPlan, RouteName, plan_query
+from app.query.rewrite import CompletionClient, QueryRewritePlan, rewrite_query
 from app.query.simple_corpus import EvidenceChunk, retrieve_chunks
+from app.rag.query_signals import clean_search_query
 from app.rag.retrieval import RetrievalResult, hybrid_search
 from app.settings import PROJECT_ROOT
 from app.web_search.schemas import DEFAULT_SEARCH_SOURCES, LiteratureSearchRequest, LiteratureSearchRun, SearchSource
@@ -30,6 +34,8 @@ ORCHESTRATION_SYSTEM_PROMPT = """Ты RAG-ассистент для научно
 Отвечай только по retrieved evidence. Если данных недостаточно, скажи об этом явно.
 Для сравнений методик используй summary/procedure evidence, raw-фрагменты и таблицы. Не выдумывай численные значения, условия, оборудование и ссылки.
 Структурируй ответ по-русски: краткий вывод, подтверждающие источники, ограничения и следующие шаги."""
+
+INDEXED_SUMMARY_SOURCE_TYPES = {"document_summary", "procedure_summary"}
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,7 @@ class QueryOrchestrationResult:
     fallbacks: list[dict[str, Any]] = field(default_factory=list)
     local_diagnostics: dict[str, Any] = field(default_factory=dict)
     web_run: LiteratureSearchRun | None = None
+    query_rewrite: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +75,7 @@ class QueryOrchestrationResult:
             "answer_draft": self.answer_draft,
             "fallbacks": self.fallbacks,
             "local_diagnostics": self.local_diagnostics,
+            "query_rewrite": self.query_rewrite,
         }
 
 
@@ -123,6 +131,78 @@ def resolve_config_path(root: Path, value: Any, fallback: Path | None = None) ->
     return path if path.is_absolute() else root / path
 
 
+def unique_queries(values: list[str], *, limit: int = 12) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = " ".join(str(value or "").split())
+        key = clean_search_query(text)
+        if not text or not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def local_variants_from_rewrite(rewrite_plan: QueryRewritePlan, original_query: str) -> list[str]:
+    keyword_query = " ".join(rewrite_plan.all_keywords)
+    entity_query = " ".join(
+        [*rewrite_plan.material_terms, *rewrite_plan.process_terms, *rewrite_plan.property_terms]
+    )
+    unscoped_search_queries = [
+        query
+        for query in rewrite_plan.search_queries
+        if " OR " not in query and "(" not in query and ")" not in query
+    ]
+    return unique_queries(
+        [
+            rewrite_plan.corrected_query,
+            *unscoped_search_queries,
+            keyword_query,
+            entity_query,
+            original_query,
+        ],
+        limit=10,
+    )
+
+
+def merge_queries(primary: list[str], fallback: list[str], *, limit: int = 12) -> list[str]:
+    return unique_queries([*primary, *fallback], limit=limit)
+
+
+def apply_query_rewrite(plan: QueryPlan, rewrite_plan: QueryRewritePlan) -> QueryPlan:
+    local_variants = local_variants_from_rewrite(rewrite_plan, plan.original_query)
+    web_variants = unique_queries(
+        [
+            rewrite_plan.corrected_query,
+            *rewrite_plan.search_queries,
+            *rewrite_plan.keywords_en,
+            *rewrite_plan.keywords_ru,
+            *plan.web_search_queries,
+            *plan.rewritten_queries.web,
+        ],
+        limit=12,
+    )
+    rewritten = plan.rewritten_queries.model_copy(
+        update={
+            "raw_rag": merge_queries(local_variants, plan.rewritten_queries.raw_rag),
+            "summary_rag": merge_queries(local_variants, plan.rewritten_queries.summary_rag),
+            "graph": merge_queries(local_variants, plan.rewritten_queries.graph),
+            "tables": merge_queries(local_variants, plan.rewritten_queries.tables),
+            "web": merge_queries(web_variants, plan.rewritten_queries.web, limit=14),
+        }
+    )
+    return plan.model_copy(
+        update={
+            "rewritten_queries": rewritten,
+            "internal_search_queries": merge_queries(local_variants, plan.internal_search_queries, limit=14),
+            "web_search_queries": merge_queries(web_variants, plan.web_search_queries, limit=14),
+        }
+    )
+
+
 def raw_rows(chunks: list[EvidenceChunk]) -> list[dict[str, Any]]:
     return [
         {
@@ -160,6 +240,25 @@ def indexed_raw_rows(results: list[RetrievalResult]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def split_indexed_summary_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    raw_rows_only: list[dict[str, Any]] = []
+    summary_rows_only: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("source_type") in INDEXED_SUMMARY_SOURCE_TYPES:
+            summary_row = dict(row)
+            summary_row.setdefault("kind", row.get("source_type"))
+            summary_rows_only.append(summary_row)
+        else:
+            raw_rows_only.append(row)
+    return raw_rows_only, summary_rows_only
+
+
+def trim_rows_keep_diagnostics(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    data_rows = [row for row in rows if row.get("source_type") != "diagnostics"]
+    diagnostic_rows = [row for row in rows if row.get("source_type") == "diagnostics"]
+    return [*data_rows[:limit], *diagnostic_rows]
 
 
 def summary_rows(hits: list[SummaryHit]) -> list[dict[str, Any]]:
@@ -380,7 +479,7 @@ def run_raw_route(
                     index_dir=index_dir,
                     lexical_dir=lexical_dir,
                     chunks_path=chunks_path or config.chunks_path,
-                    top_k=config.top_k_raw,
+                    top_k=max(config.top_k_raw + config.top_k_summary + 5, 15),
                     mode="hybrid",
                     allow_network=True,
                     root=config.project_root,
@@ -528,8 +627,21 @@ def run_query_orchestration(
     generate_pdf_report: bool = False,
     required_routes: list[RouteName] | None = None,
     retrieval_profile: str | None = None,
+    use_query_rewrite: bool = True,
+    use_llm_query_rewrite: bool = False,
+    rewrite_client: CompletionClient | None = None,
 ) -> QueryOrchestrationResult:
+    load_dotenv(project_root / ".env", override=False, encoding="utf-8-sig")
     plan = plan_query(query)
+    rewrite_plan: QueryRewritePlan | None = None
+    if use_query_rewrite:
+        rewrite_plan = rewrite_query(
+            query,
+            client=rewrite_client,
+            materials_only=True,
+            use_llm=bool(use_llm_query_rewrite and rewrite_client),
+        )
+        plan = apply_query_rewrite(plan, rewrite_plan)
     if required_routes:
         routes_in_order: list[RouteName] = []
         for route in [*plan.routes, *required_routes]:
@@ -546,7 +658,12 @@ def run_query_orchestration(
     web_run: LiteratureSearchRun | None = None
 
     raw = run_raw_route(plan, config, fallbacks, retrieval_profile=retrieval_profile) if use_internal or "raw_rag" in routes else []
+    raw, indexed_summaries = split_indexed_summary_rows(raw)
+    raw = trim_rows_keep_diagnostics(raw, limit=config.top_k_raw)
+    indexed_summaries = indexed_summaries[: config.top_k_summary]
     summaries = run_summary_route(plan, config, fallbacks) if use_internal or "summary_rag" in routes else []
+    if indexed_summaries:
+        summaries = [*indexed_summaries, *summaries]
     tables = run_table_route(plan, config, fallbacks) if "table_search" in routes else []
     graph = run_graph_route(plan, config, fallbacks) if "graph_search" in routes else []
     web: list[dict[str, Any]] = []
@@ -577,6 +694,7 @@ def run_query_orchestration(
         fallbacks=fallbacks,
         local_diagnostics=local_diagnostics(config, plan),
         web_run=web_run,
+        query_rewrite=rewrite_plan.model_dump(mode="json") if rewrite_plan else None,
     )
 
 

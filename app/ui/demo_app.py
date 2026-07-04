@@ -126,10 +126,11 @@ def confidence_label(run: Any | None, orchestration: Any | None) -> tuple[str, f
 
 def rewritten_query_rows(run: Any | None, orchestration: Any | None) -> list[dict[str, Any]]:
     plan = getattr(run, "query_plan", None) if run else None
+    orchestration_rewrite = getattr(orchestration, "query_rewrite", None) if orchestration is not None else None
     if not plan and orchestration is not None:
         plan = orchestration.plan.model_dump(mode="json")
     plan = plan or {}
-    rewrite = plan.get("llm_rewrite") if isinstance(plan.get("llm_rewrite"), dict) else {}
+    rewrite = plan.get("llm_rewrite") if isinstance(plan.get("llm_rewrite"), dict) else orchestration_rewrite or {}
     rows: list[dict[str, Any]] = []
     if rewrite:
         rows.append({"stage": "corrected", "query": rewrite.get("corrected_query"), "llm": rewrite.get("rewrite_used_llm")})
@@ -383,6 +384,9 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
             generate_pdf_report=options["generate_pdf"],
             required_routes=REQUEST_TYPES[request_type],
             retrieval_profile=options["retrieval_profile"],
+            use_query_rewrite=True,
+            use_llm_query_rewrite=options["use_llm_rewrite"],
+            rewrite_client=llm_client if options["use_llm_rewrite"] else None,
         )
         literature_run = orchestration.web_run
         if options["generate_answer"]:
