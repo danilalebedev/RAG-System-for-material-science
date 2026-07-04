@@ -12,6 +12,7 @@ from typing import Any
 
 DOC_FILES = (
     "reports/oreacle_defense_pack.md",
+    "reports/oreacle_pitch_deck.md",
     "reports/oreacle_routerai_demo_script.md",
     "reports/oreacle_marketing_demo_plan.md",
     "tasks/04_query_gui_eval/README.md",
@@ -119,7 +120,7 @@ def build_bundle_readme(manifest: dict[str, Any]) -> str:
         "```\n\n"
         "Local URL: http://127.0.0.1:8501/\n\n"
         "## Included\n\n"
-        "- Defense runbook and pitch notes from `reports/`.\n"
+        "- Defense runbook, pitch deck, and pitch notes from `reports/`.\n"
         "- Demo UX / technical task notes from `tasks/04_query_gui_eval/README.md`.\n"
         "- RouterAI BGE-M3 index manifests when present.\n"
         "- Latest demo preflight report when present.\n"

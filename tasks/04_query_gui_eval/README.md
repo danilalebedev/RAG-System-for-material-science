@@ -315,8 +315,8 @@ Streamlit-приложении.
 - `Отчеты`: выгрузка RouterAI answer report, full report, links-only report, Deep Search report,
   executive brief, DOCX/PDF/JSON и ZIP artifacts.
 
-Актуальный pitch/demo материал лежит в `reports/oreacle_defense_pack.md` и
-`reports/oreacle_routerai_demo_script.md`.
+Актуальный pitch/demo материал лежит в `reports/oreacle_defense_pack.md`,
+`reports/oreacle_pitch_deck.md` и `reports/oreacle_routerai_demo_script.md`.
 
 ### Артефакты одного run
 
