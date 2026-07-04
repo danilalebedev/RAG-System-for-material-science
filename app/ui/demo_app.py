@@ -45,6 +45,9 @@ from app.web_search.schemas import ALL_SEARCH_SOURCES, DEFAULT_SEARCH_SOURCES, S
 load_dotenv(ROOT / ".env")
 GRAPH_NODES_PATH = ROOT / "data" / "index" / "knowledge_graph_nodes.jsonl"
 GRAPH_EDGES_PATH = ROOT / "data" / "index" / "knowledge_graph_edges.jsonl"
+CHUNKS_PATH = ROOT / "data" / "parsed" / "chunks.jsonl"
+DOCUMENTS_PATH = ROOT / "data" / "parsed" / "documents.jsonl"
+TABLES_PATH = ROOT / "data" / "parsed" / "tables.jsonl"
 
 
 DEMO_PROMPTS = {
@@ -72,6 +75,33 @@ DEMO_PROMPTS = {
         "Найди свежие публикации про извлечение никеля из хвостов",
     ],
 }
+DEMO_SCENARIO_GALLERY = [
+    {
+        "label": "Сравнить методы переработки LIB для извлечения Ni и Co",
+        "query": "Сравнить методы переработки литий-ионных батарей для извлечения Ni и Co",
+        "mode": "Сравнение методик",
+    },
+    {
+        "label": "Технологии удаления SO₂ и ограничения",
+        "query": "Найти технологии удаления SO2 в металлургии и сравнить ограничения",
+        "mode": "Сравнение методик",
+    },
+    {
+        "label": "Связи: никель → процессы → свойства → публикации",
+        "query": "Показать связи: никель → процессы → свойства → публикации",
+        "mode": "Граф знаний",
+    },
+    {
+        "label": "Таблицы Ni, Cu, Co",
+        "query": "Найти таблицы с содержанием Ni, Cu, Co и сравнить значения",
+        "mode": "Табличные данные",
+    },
+    {
+        "label": "Внутреннее vs внешнее: кучное выщелачивание",
+        "query": "Сравнить внутренние данные с внешними публикациями по кучному выщелачиванию в холодном климате",
+        "mode": "Внутреннее vs внешнее",
+    },
+]
 
 
 def display_value(value: Any, *, max_chars: int = 900) -> Any:
@@ -169,12 +199,34 @@ def render_hero() -> None:
     st.markdown(
         """
         <div class="rd-hero">
-          <h1>R&amp;D Knowledge Cockpit</h1>
-          <p>Поиск, сравнение и объяснение технических решений по внутренней базе, таблицам, графу знаний и внешним публикациям.</p>
+          <h1>Oreacle</h1>
+          <p><strong>R&amp;D Knowledge Cockpit for Metals &amp; Mining</strong></p>
+          <p>От разрозненных отчётов, таблиц и публикаций — к проверяемым инженерным решениям.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def apply_demo_scenario(query: str, mode: str) -> None:
+    st.session_state["rd_question"] = query
+    st.session_state["active_demo_mode"] = mode
+    if mode == "Сравнение методик":
+        st.session_state["comparison_query"] = query
+
+
+def render_demo_scenario_gallery() -> None:
+    st.markdown('<div class="section-label">Demo scenarios</div>', unsafe_allow_html=True)
+    columns = st.columns(5)
+    for index, scenario in enumerate(DEMO_SCENARIO_GALLERY):
+        with columns[index % 5]:
+            st.button(
+                scenario["label"],
+                key=f"scenario_gallery_{index}",
+                on_click=apply_demo_scenario,
+                args=(scenario["query"], scenario["mode"]),
+                use_container_width=True,
+            )
 
 
 def _chip(label: str, value: Any, css_class: str = "") -> str:
@@ -237,6 +289,10 @@ def query_plan_search_queries(plan: dict[str, Any]) -> list[str]:
     for item in plan.get("search_queries") or []:
         if item and item not in values:
             values.append(str(item))
+    for key in ("internal_search_queries", "web_search_queries"):
+        for item in plan.get(key) or []:
+            if item and item not in values:
+                values.append(str(item))
     return values
 
 
@@ -257,11 +313,23 @@ def render_query_intelligence_plan(plan: dict[str, Any]) -> None:
         [
             _chip("intent", plan.get("intent") or "n/a", "intent"),
             _chip("domain", plan.get("domain") or "n/a"),
-            _chip("answer", plan.get("answer_format") or "n/a"),
-            _chip("entities", ", ".join(entity_values[:8]) or "none"),
-            *[_chip("route", route, "route") for route in plan.get("routes") or []],
+            _chip("формат ответа", plan.get("answer_format") or "n/a"),
+            _chip("выделенные сущности", ", ".join(entity_values[:8]) or "none"),
+            *[_chip("источник поиска", route, "route") for route in plan.get("routes") or []],
         ]
     )
+    if plan.get("entity_aliases"):
+        st.caption("Синонимы / aliases")
+        st.json(plan.get("entity_aliases"), expanded=False)
+    col_local, col_web = st.columns(2)
+    with col_local:
+        st.caption("Запросы к локальной базе")
+        for item in plan.get("internal_search_queries") or []:
+            st.write(f"- {item}")
+    with col_web:
+        st.caption("Запросы к внешнему поиску")
+        for item in plan.get("web_search_queries") or []:
+            st.write(f"- {item}")
     if plan.get("needs_clarification"):
         st.warning(plan.get("clarifying_question") or "Clarification is needed.")
     with st.expander("Query Intelligence JSON", expanded=False):
@@ -274,25 +342,29 @@ def render_route_orchestration_result(result: Any) -> None:
     context = payload.get("retrieved_context") or {}
     evidence = payload.get("evidence") or []
     fallbacks = payload.get("fallbacks") or []
+    diagnostics = payload.get("local_diagnostics") or {}
 
-    st.subheader("Route Orchestration")
+    st.subheader("Использованные источники поиска")
     render_query_intelligence_plan(plan)
 
     source_rows = [
         {"source": source, "items": len(rows or []), "used": bool(rows)}
         for source, rows in context.items()
     ]
-    st.write("Sources actually used")
-    render_table(source_rows, empty_text="No retrieval sources were used.")
+    st.write("Найденные источники")
+    render_table(source_rows, empty_text="Источники не вернули результатов.")
+    if diagnostics:
+        with st.expander("Диагностика локального поиска", expanded=not any(row["used"] for row in source_rows)):
+            render_table([diagnostics])
 
     if payload.get("answer_draft"):
-        st.text_area("Answer draft", value=payload["answer_draft"], height=150)
+        st.text_area("Executive summary", value=payload["answer_draft"], height=150)
 
-    tabs = st.tabs(["Evidence", "Raw", "Summaries", "Tables", "Graph", "Web", "Fallbacks"])
+    tabs = st.tabs(["Evidence", "Фрагменты внутренних документов", "Summaries", "Tables", "Graph context", "Web", "Недоступные источники"])
     with tabs[0]:
         render_table(evidence, empty_text="No evidence collected.")
     with tabs[1]:
-        render_table(context.get("raw") or [], empty_text="No raw evidence.")
+        render_table(context.get("raw") or [], empty_text="Фрагменты внутренних документов не найдены.")
     with tabs[2]:
         render_table(context.get("summaries") or [], empty_text="No summary evidence.")
     with tabs[3]:
@@ -305,7 +377,7 @@ def render_route_orchestration_result(result: Any) -> None:
         if fallbacks:
             render_table(fallbacks)
         else:
-            st.success("No route fallbacks.")
+            st.success("Все выбранные источники поиска отработали без резервного режима.")
 
 
 def render_comparison_mode_result(result: Any) -> None:
@@ -320,10 +392,10 @@ def render_comparison_mode_result(result: Any) -> None:
 
     render_query_intelligence_plan(plan)
 
-    st.markdown('<div class="section-label">Sources actually used</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Sources</div>', unsafe_allow_html=True)
     render_table(
         [{"source": source, "items": len(items or []), "used": bool(items)} for source, items in context.items()],
-        empty_text="No sources were used.",
+        empty_text="Найденные источники отсутствуют.",
     )
 
     st.markdown('<div class="section-label">Comparison table</div>', unsafe_allow_html=True)
@@ -348,7 +420,7 @@ def render_comparison_mode_result(result: Any) -> None:
         with st.expander(f"{index}. {row.get('item') or 'Method'} evidence", expanded=index == 1):
             render_table(row.get("evidence") or [], empty_text="No direct evidence for this row.")
 
-    st.markdown('<div class="section-label">Missing evidence / fallbacks</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Missing evidence / unavailable sources</div>', unsafe_allow_html=True)
     if missing:
         render_table(missing)
     else:
@@ -496,6 +568,8 @@ def render_heatmap(rows: list[dict[str, Any]]) -> None:
 def result_rows(run: Any) -> list[dict[str, Any]]:
     rows = []
     for item in run.results:
+        oa = item.open_access or {}
+        access_status = oa.get("access_status") or ("open" if item.open_access_pdf_url else "unknown")
         rows.append(
             {
                 "source": SEARCH_SOURCE_LABELS.get(item.source, item.source),
@@ -507,9 +581,58 @@ def result_rows(run: Any) -> list[dict[str, Any]]:
                 "score": item.score,
                 "url": str(item.url) if item.url else None,
                 "keywords": ", ".join(item.keyword_hits),
+                "access": access_status,
+                "full_text_source": oa.get("source") or "",
+                "legal_pdf": oa.get("best_pdf_url") or "",
             }
         )
     return rows
+
+
+def access_badge(open_access: dict[str, Any]) -> str:
+    status = open_access.get("access_status") or "unknown"
+    if status == "open":
+        return "Open full text"
+    if status == "paywalled":
+        return "Paywalled"
+    if status == "metadata_only":
+        return "Metadata only"
+    return "Access unknown"
+
+
+def render_open_access_cards(run: Any) -> None:
+    for item in run.results[:10]:
+        oa = item.open_access or {}
+        with st.expander(f"{access_badge(oa)} | {item.title}", expanded=False):
+            st.write(f"Source of full text: {oa.get('source') or item.source}")
+            if oa.get("best_pdf_url"):
+                st.markdown(f"[Open legal full text]({oa['best_pdf_url']})")
+                st.button("Add legal full text to corpus", key=f"add_oa_{item.result_id}", disabled=True)
+            else:
+                landing = oa.get("landing_page_url") or str(item.url or "")
+                if landing:
+                    st.markdown(f"[Open publisher / metadata page]({landing})")
+                st.info("Full text not found legally. Upload PDF manually if you have access.")
+            if oa.get("license"):
+                st.caption(f"License: {oa['license']}")
+            if oa.get("evidence"):
+                st.caption("Evidence: " + "; ".join(str(value) for value in oa.get("evidence") or []))
+
+
+def render_local_search_diagnostics(plan: dict[str, Any]) -> None:
+    rows = [
+        {
+            "chunks.jsonl": CHUNKS_PATH.exists(),
+            "documents.jsonl": DOCUMENTS_PATH.exists(),
+            "tables.jsonl": TABLES_PATH.exists(),
+            "graph nodes": GRAPH_NODES_PATH.exists(),
+            "graph edges": GRAPH_EDGES_PATH.exists(),
+            "actual local query": (plan.get("internal_search_queries") or [plan.get("original_query") or ""])[0],
+            "called search sources": ", ".join(plan.get("routes") or []),
+        }
+    ]
+    with st.expander("Диагностика локального поиска", expanded=True):
+        render_table(rows)
 
 
 def deep_rows(run: Any) -> list[dict[str, Any]]:
@@ -697,8 +820,10 @@ def render_cockpit(run: Any, corrected_query: str, search_queries: list[str]) ->
     col3.metric("Deep Search summaries", len(run.deep_results))
     col4.metric("Методики", len(run.comparison.rows) if run.comparison else 0)
     st.markdown(f"**Запрос пользователя:** {run.request.query}")
-    st.markdown(f"**Поисковая формулировка:** {corrected_query}")
+    st.markdown(f"**Нормализованный запрос:** {corrected_query}")
     st.markdown(f"**Ключевые слова:** {', '.join(run.keywords) if run.keywords else 'n/a'}")
+    if not run.local_matches:
+        render_local_search_diagnostics(run.query_plan or {})
 
     render_query_decomposer(run)
 
@@ -770,6 +895,9 @@ def render_run(run: Any) -> None:
         rows = result_rows(run)
         st.write("Найденные статьи")
         render_table(rows, empty_text="Внешние статьи не найдены.")
+        if run.results:
+            st.subheader("Legal full-text access")
+            render_open_access_cards(run)
         if rows:
             st.download_button(
                 "Download literature JSON",
@@ -995,7 +1123,7 @@ def render_history() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="R&D Knowledge Cockpit", layout="wide")
+    st.set_page_config(page_title="Oreacle", layout="wide")
     render_cockpit_styles()
     render_hero()
 
@@ -1018,6 +1146,7 @@ def main() -> None:
         st.subheader("Retrieval")
         local_search = st.checkbox("Локальный поиск", value=True)
         web_search = st.checkbox("Внешний поиск публикаций", value=True)
+        safe_demo_mode = st.checkbox("Safe demo mode", value=True, help="Не падает при недоступных LLM/API/индексах, показывает понятные резервные режимы.")
         analysis_mode = st.radio("Analysis mode", options=["Quick search", "Deep analysis"], index=0)
         deep_search = analysis_mode == "Deep analysis"
         pdf_report = st.checkbox("Generate PDF report", value=True)
@@ -1060,6 +1189,15 @@ def main() -> None:
     queued_query = st.session_state.pop("queued_query", None)
     if queued_query:
         st.session_state["rd_question"] = queued_query
+
+    render_demo_scenario_gallery()
+    mode_options = ["Быстрый поиск", "Сравнение методик", "Табличные данные", "Граф знаний", "Внутреннее vs внешнее"]
+    active_mode = st.session_state.get("active_demo_mode", mode_options[0])
+    if active_mode not in mode_options:
+        active_mode = mode_options[0]
+    st.radio("Mode", options=mode_options, index=mode_options.index(active_mode), key="active_demo_mode", horizontal=True)
+    if safe_demo_mode:
+        st.caption("Safe demo mode: если Yandex/API/индекс недоступны, Oreacle покажет недоступный источник и продолжит работу.")
 
     render_mode_cards()
     feature_tabs = st.tabs(["Быстрый поиск", "Сравнение методик", "Табличные данные", "Граф знаний", "Внутреннее vs внешнее"])
@@ -1134,9 +1272,10 @@ def main() -> None:
         if year_range != (2000, 2026):
             slot_values["Период"] = ", ".join(filter(None, [slot_values.get("Период"), f"{year_range[0]}-{year_range[1]}"]))
         search_query = build_search_query_from_slots(active_query, slot_values)
+        backend_query = active_query
 
         request = LiteratureSearchRequest(
-            query=search_query,
+            query=backend_query,
             top_k=top_k,
             sources=source_options if web_search else [],
             deep_search="top5" if deep_search else "none",
@@ -1157,7 +1296,7 @@ def main() -> None:
                 run = run_literature_search(request)
             answer = f"Найдено внешних источников: {len(run.results)}; локальных совпадений: {len(run.local_matches)}."
             if filter_parts or any(slot_values.values()):
-                st.caption(f"Поисковая формулировка после slots: {search_query}")
+                st.caption(f"Нормализованный запрос: {search_query}")
             st.write(answer)
         st.session_state["history"].append({"role": "assistant", "content": answer})
         render_run(run)

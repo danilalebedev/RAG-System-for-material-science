@@ -41,6 +41,7 @@ from app.query.reports import (
 )
 from app.query.rewrite import deterministic_query_rewrite
 from app.ui.demo_app import table_df
+from app.web_search.open_access import OpenAccessResolver
 from app.web_search.resource_links import build_resource_links
 from app.web_search.schemas import DeepSearchResult, LiteratureSearchRequest, LiteratureSearchResult, LiteratureSearchRun, MethodComparison
 
@@ -284,6 +285,122 @@ def test_client_search_continues_when_one_source_times_out() -> None:
     assert [item.source for item in results] == ["openalex"]
     assert warnings
     assert "arXiv search skipped" in warnings[0]
+
+
+def test_open_access_resolver_short_circuits_arxiv_doi() -> None:
+    result = OpenAccessResolver().resolve(doi="10.48550/arXiv.2604.11229", title="Nickel paper", year=2026)
+    assert result.source == "arxiv"
+    assert result.open_access is True
+    assert result.best_pdf_url == "https://arxiv.org/pdf/2604.11229"
+    assert result.landing_page_url == "https://arxiv.org/abs/2604.11229"
+
+
+def test_open_access_resolver_skips_unpaywall_without_email_and_uses_openalex() -> None:
+    class Response:
+        status_code = 200
+
+        def json(self) -> dict:
+            return {
+                "results": [
+                    {
+                        "title": "Open nickel paper",
+                        "publication_year": 2025,
+                        "open_access": {"is_oa": True, "oa_url": "https://example.org/open"},
+                        "primary_location": {"pdf_url": "https://example.org/open.pdf", "landing_page_url": "https://example.org/open"},
+                    }
+                ]
+            }
+
+    class Session:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str, **kwargs):
+            self.urls.append(url)
+            return Response()
+
+    session = Session()
+    result = OpenAccessResolver(session=session, unpaywall_email="").resolve(doi="10.1/open", title="Open nickel paper")
+    assert result.source == "openalex"
+    assert result.open_access is True
+    assert result.best_pdf_url == "https://example.org/open.pdf"
+    assert all("unpaywall" not in url for url in session.urls)
+
+
+def test_open_access_resolver_keeps_looking_after_unpaywall_paywalled() -> None:
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class Session:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str, **kwargs):
+            self.urls.append(url)
+            if "unpaywall" in url:
+                return Response({"title": "Nickel paper", "is_oa": False, "doi_url": "https://doi.org/10.1/paywalled"})
+            if "openalex" in url:
+                return Response(
+                    {
+                        "results": [
+                            {
+                                "title": "Nickel paper",
+                                "publication_year": 2024,
+                                "open_access": {"is_oa": True, "oa_url": "https://example.org/open"},
+                                "primary_location": {"landing_page_url": "https://example.org/open"},
+                            }
+                        ]
+                    }
+                )
+            return Response({})
+
+    session = Session()
+    result = OpenAccessResolver(session=session, unpaywall_email="team@example.org").resolve(doi="10.1/paywalled", title="Nickel paper")
+    assert result.source == "openalex"
+    assert result.open_access is True
+    assert result.access_status == "open"
+    assert any("unpaywall" in url for url in session.urls)
+    assert any("openalex" in url for url in session.urls)
+
+
+def test_open_access_resolver_returns_best_non_open_fallback() -> None:
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class Session:
+        def get(self, url: str, **kwargs):
+            if "unpaywall" in url:
+                return Response({"title": "Nickel paper", "is_oa": False, "doi_url": "https://doi.org/10.1/no-open"})
+            if "openalex" in url:
+                return Response(
+                    {
+                        "results": [
+                            {
+                                "title": "Nickel paper",
+                                "open_access": {"is_oa": False},
+                                "primary_location": {"landing_page_url": "https://example.org/metadata"},
+                            }
+                        ]
+                    }
+                )
+            return Response({})
+
+    result = OpenAccessResolver(session=Session(), unpaywall_email="team@example.org").resolve(doi="10.1/no-open", title="Nickel paper")
+    assert result.source == "openalex"
+    assert result.open_access is False
+    assert result.access_status == "metadata_only"
 
 
 def test_deterministic_query_rewrite_scopes_materials_search() -> None:

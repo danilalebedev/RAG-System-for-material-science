@@ -112,6 +112,30 @@ def score_text(text: str, terms: Iterable[str]) -> tuple[float, tuple[str, ...]]
     return len(matched) / max(len(terms), 1), matched
 
 
+def is_nickel_ore_query(query: str) -> bool:
+    normalized = normalize_text(query)
+    nickel = any(term in normalized for term in ("nickel", "ni", "никел"))
+    ore = any(term in normalized for term in ("ore", "ores", "руда", "руды", "руд"))
+    return nickel and ore
+
+
+def nickel_ore_score_adjustment(query: str, text: str) -> float:
+    if not is_nickel_ore_query(query):
+        return 0.0
+    normalized = normalize_text(text)
+    nickel_hit = any(term in normalized for term in ("nickel", " ni ", "ni/", "ni,", "ni;", "никел"))
+    ore_hit = any(term in normalized for term in ("ore", "ores", "руда", "руды", "руд"))
+    gold_hit = any(term in normalized for term in ("gold", " au ", "au/", "au,", "au;", "золото", "золот"))
+    score = 0.0
+    if nickel_hit:
+        score += 2.0
+    if nickel_hit and ore_hit:
+        score += 2.0
+    if gold_hit and not nickel_hit:
+        score -= 2.5
+    return score
+
+
 def find_table_files(roots: Iterable[Path]) -> Iterator[Path]:
     seen: set[Path] = set()
     for root in roots:
@@ -296,7 +320,9 @@ def search_table_rows(
     top_rows: int = 3,
 ) -> tuple[float, tuple[str, ...], tuple[dict[str, Any], ...]]:
     terms = query_terms(query)
-    table_score, table_matches = score_text(summary.search_text(), terms)
+    summary_text = summary.search_text()
+    table_score, table_matches = score_text(summary_text, terms)
+    table_score += nickel_ore_score_adjustment(query, summary_text)
     rows: list[tuple[float, tuple[str, ...], dict[str, Any]]] = []
     if table_score > 0 and summary.path.exists() and summary.path.suffix.casefold() in TABLE_EXTENSIONS:
         try:
@@ -308,7 +334,9 @@ def search_table_rows(
         if df is None:
             return table_score, table_matches, ()
         for row in df.iter_rows(named=True):
-            score, matched = score_text(row_to_text(row), terms)
+            row_text = row_to_text(row)
+            score, matched = score_text(row_text, terms)
+            score += nickel_ore_score_adjustment(query, row_text)
             if score > 0:
                 rows.append((score, matched, {str(key): value for key, value in row.items()}))
     rows.sort(key=lambda item: item[0], reverse=True)
@@ -365,7 +393,9 @@ def search_tables(
     terms = query_terms(query)
     candidates: list[tuple[float, tuple[str, ...], TableSummary]] = []
     for summary in summaries:
-        score, matched = score_text(summary.search_text(), terms)
+        summary_text = summary.search_text()
+        score, matched = score_text(summary_text, terms)
+        score += nickel_ore_score_adjustment(query, summary_text)
         if score > 0:
             candidates.append((score, matched, summary))
 

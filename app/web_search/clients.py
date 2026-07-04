@@ -80,6 +80,20 @@ def compact_text(value: Any, max_chars: int | None = None) -> str:
     return text
 
 
+def normalize_for_relevance(value: Any) -> str:
+    return compact_text(value).casefold().replace("ё", "е")
+
+
+def relevance_hits(text: str, terms: list[str]) -> list[str]:
+    normalized = normalize_for_relevance(text)
+    hits: list[str] = []
+    for term in terms:
+        clean = normalize_for_relevance(term)
+        if len(clean) >= 2 and clean in normalized and term not in hits:
+            hits.append(term)
+    return hits
+
+
 def stable_result_id(source: str, *parts: Any) -> str:
     payload = "\n".join(str(part or "") for part in parts)
     digest = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()[:16]
@@ -468,10 +482,17 @@ def score_result(
     keywords: list[str],
     *,
     journal_quartile_map: dict[str, str] | None = None,
+    relevance_terms: list[str] | None = None,
 ) -> float:
     text = result.evidence_text()
     hits = keyword_hits(text, keywords)
     score = len(hits) * 5.0
+    alias_hits = relevance_hits(text, relevance_terms or [])
+    title_hits = relevance_hits(result.title, [*(relevance_terms or []), *keywords])
+    snippet_hits = relevance_hits(" ".join([result.abstract or "", result.snippet or ""]), [*(relevance_terms or []), *keywords])
+    score += len(alias_hits) * 4.0
+    score += len(title_hits) * 3.0
+    score += len(snippet_hits) * 1.5
     if result.abstract:
         score += 2.0
     if result.doi:
@@ -491,6 +512,12 @@ def score_result(
         result.raw["journal_quartile"] = quartile
         result.raw["journal_quartile_boost"] = boost
     result.keyword_hits = hits
+    if alias_hits:
+        result.raw["alias_hits"] = alias_hits[:20]
+    if title_hits:
+        result.raw["title_relevance_hits"] = title_hits[:20]
+    if snippet_hits:
+        result.raw["snippet_relevance_hits"] = snippet_hits[:20]
     result.score = round(score, 4)
     return result.score
 
@@ -502,12 +529,15 @@ def dedupe_and_rank_results(
     top_k: int,
     materials_only: bool = False,
     journal_quartile_map: dict[str, str] | None = None,
+    relevance_terms: list[str] | None = None,
 ) -> list[LiteratureSearchResult]:
     best_by_key: dict[str, LiteratureSearchResult] = {}
     for result in results:
         if materials_only and not is_materials_science_result(result):
             continue
-        score_result(result, keywords, journal_quartile_map=journal_quartile_map)
+        score_result(result, keywords, journal_quartile_map=journal_quartile_map, relevance_terms=relevance_terms)
+        if relevance_terms and not relevance_hits(result.evidence_text(), relevance_terms):
+            continue
         key = result_key(result)
         existing = best_by_key.get(key)
         if existing is None or result.score > existing.score:
@@ -641,6 +671,7 @@ class LiteratureSearchClient:
         top_k: int,
         query_variants: list[str] | None = None,
         materials_only: bool = False,
+        relevance_terms: list[str] | None = None,
     ) -> tuple[list[LiteratureSearchResult], list[str]]:
         results: list[LiteratureSearchResult] = []
         warnings: list[str] = []
@@ -683,6 +714,7 @@ class LiteratureSearchClient:
                 top_k=top_k,
                 materials_only=materials_only,
                 journal_quartile_map=self.journal_quartile_map,
+                relevance_terms=relevance_terms,
             ),
             warnings,
         )

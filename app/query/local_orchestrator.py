@@ -448,6 +448,14 @@ def build_brief(
 
 
 def first_query(plan: QueryPlan, route: str, fallback: str) -> str:
+    if route in {"raw_rag", "summary_rag", "tables", "table_search", "graph"}:
+        queries = getattr(plan, "internal_search_queries", []) or []
+        if queries:
+            return queries[0]
+    if route == "web":
+        queries = getattr(plan, "web_search_queries", []) or []
+        if queries:
+            return queries[0]
     queries = getattr(plan.rewritten_queries, route, []) or []
     return queries[0] if queries else fallback
 

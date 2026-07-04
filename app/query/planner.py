@@ -69,6 +69,59 @@ MATERIAL_TERMS = (
     "штейн",
     "хвосты",
 )
+NICKEL_ORE_ALIASES = (
+    "никелевая руда",
+    "никелевые руды",
+    "nickel ore",
+    "nickel ores",
+    "латеритная никелевая руда",
+    "сульфидная никелевая руда",
+    "laterite nickel ore",
+    "sulfide nickel ore",
+    "Ni ore",
+    "сульфидные никелевые концентраты",
+    "limonite saprolite nickel ore",
+)
+GRAPH_QUERY_TERMS = (
+    "relation",
+    "relations",
+    "related",
+    "path",
+    "entity",
+    "entities",
+    "graph",
+    "связано",
+    "связь",
+    "связи",
+    "связей",
+    "путь",
+    "граф",
+    "сущност",
+)
+GRAPH_CHAIN_MARKERS = ("->", "=>", "→")
+WEB_LITERATURE_TERMS = (
+    "paper",
+    "papers",
+    "article",
+    "articles",
+    "publication",
+    "publications",
+    "литератур",
+    "стать",
+    "публикац",
+    "свеж",
+)
+MATERIAL_PHRASE_ALIASES: dict[str, tuple[str, ...]] = {
+    "никелевая руда": NICKEL_ORE_ALIASES,
+    "никелевые руды": NICKEL_ORE_ALIASES,
+    "nickel ore": NICKEL_ORE_ALIASES,
+    "nickel ores": NICKEL_ORE_ALIASES,
+    "ni ore": NICKEL_ORE_ALIASES,
+    "латеритная никелевая руда": NICKEL_ORE_ALIASES,
+    "сульфидная никелевая руда": NICKEL_ORE_ALIASES,
+    "laterite nickel ore": NICKEL_ORE_ALIASES,
+    "sulfide nickel ore": NICKEL_ORE_ALIASES,
+}
 PROCESS_TERMS = (
     "leaching",
     "flotation",
@@ -168,6 +221,10 @@ class QueryPlan(BaseModel):
     domain: str
     entities: QueryEntities = Field(default_factory=QueryEntities)
     rewritten_queries: RewrittenQueries = Field(default_factory=RewrittenQueries)
+    internal_search_queries: list[str] = Field(default_factory=list)
+    web_search_queries: list[str] = Field(default_factory=list)
+    entity_aliases: dict[str, list[str]] = Field(default_factory=dict)
+    slots: dict[str, list[str]] = Field(default_factory=dict)
     decomposed_questions: list[str] = Field(default_factory=list)
     routes: list[RouteName] = Field(default_factory=list)
     answer_format: AnswerFormat = "short_answer"
@@ -212,6 +269,11 @@ def contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term_in_text(term, text) for term in terms)
 
 
+def is_graph_query(query: str, normalized: str | None = None) -> bool:
+    text = normalized if normalized is not None else normalize_text(query)
+    return contains_any(text, GRAPH_QUERY_TERMS) or any(marker in query for marker in GRAPH_CHAIN_MARKERS)
+
+
 def matched_terms(query: str, terms: tuple[str, ...]) -> list[str]:
     normalized = normalize_text(query)
     matches: list[str] = []
@@ -219,6 +281,19 @@ def matched_terms(query: str, terms: tuple[str, ...]) -> list[str]:
         if term_in_text(term, normalized):
             matches.append(term)
     return unique(matches)
+
+
+def material_phrase_aliases(query: str) -> dict[str, list[str]]:
+    normalized = normalize_text(query)
+    aliases: dict[str, list[str]] = {}
+    for phrase, values in MATERIAL_PHRASE_ALIASES.items():
+        if term_in_text(phrase, normalized):
+            aliases[values[0]] = unique(list(values), limit=16)
+    nickel_present = contains_any(normalized, ("nickel", "ni", "никель", "никелевая", "никелевые", "никелевой"))
+    ore_present = contains_any(normalized, ("ore", "ores", "руда", "руды", "руд"))
+    if nickel_present and ore_present:
+        aliases[NICKEL_ORE_ALIASES[0]] = unique(list(NICKEL_ORE_ALIASES), limit=16)
+    return aliases
 
 
 def numeric_terms(query: str) -> list[str]:
@@ -238,8 +313,10 @@ def infer_domain(query: str) -> str:
 
 
 def infer_entities(query: str) -> QueryEntities:
+    aliases = material_phrase_aliases(query)
+    phrase_materials = list(aliases)
     return QueryEntities(
-        materials=matched_terms(query, MATERIAL_TERMS),
+        materials=unique(phrase_materials + matched_terms(query, MATERIAL_TERMS), limit=16),
         processes=matched_terms(query, PROCESS_TERMS),
         equipment=matched_terms(query, EQUIPMENT_TERMS),
         properties=unique(matched_terms(query, PROPERTY_TERMS) + numeric_terms(query)),
@@ -260,9 +337,9 @@ def infer_intent(query: str, entities: QueryEntities) -> Intent:
         return "extract_numbers"
     if contains_any(normalized, ("expert", "author", "researcher", "кто заним", "эксперт", "автор", "исследователь")):
         return "find_experts"
-    if contains_any(normalized, ("relation", "related", "path", "entity", "graph", "связано", "связь", "путь", "граф", "сущност")):
+    if is_graph_query(query, normalized):
         return "graph_exploration"
-    if contains_any(normalized, ("paper", "papers", "article", "articles", "publication", "publications", "литератур", "стать", "публикац", "свеж")):
+    if contains_any(normalized, WEB_LITERATURE_TERMS):
         return "web_literature_search"
     if contains_any(normalized, ("overview", "summarize", "summary", "обзор", "суммар", "расскажи", "что известно")):
         return "summarize_topic"
@@ -271,16 +348,43 @@ def infer_intent(query: str, entities: QueryEntities) -> Intent:
     return "find_documents"
 
 
-def routes_for_query(query: str, intent: Intent) -> list[RouteName]:
+def is_short_material_topic(query: str, entities: QueryEntities) -> bool:
+    token_count = len(TOKEN_RE.findall(query))
+    return token_count <= 5 and bool(entities.materials) and intent_like_topic(query)
+
+
+def intent_like_topic(query: str) -> bool:
+    normalized = normalize_text(query)
+    return not contains_any(
+        normalized,
+        (
+            "compare",
+            "difference",
+            "better",
+            "worse",
+            "сравн",
+            "отлич",
+            "лучше",
+            "хуже",
+            "source",
+            "evidence",
+            "где написано",
+        ),
+    )
+
+
+def routes_for_query(query: str, intent: Intent, entities: QueryEntities | None = None) -> list[RouteName]:
     normalized = normalize_text(query)
     routes: list[RouteName] = []
+    if entities and is_short_material_topic(query, entities):
+        routes.extend(["raw_rag", "summary_rag", "table_search", "graph_search"])
     if numeric_terms(query) or contains_any(normalized, ("%", "composition", "состав", "температур", "давлен", "концентрац")):
         routes.extend(["table_search", "raw_rag"])
     if contains_any(normalized, ("compare", "difference", "different", "better", "worse", "отлич", "сравн", "лучше", "хуже")):
         routes.extend(["summary_rag", "raw_rag", "table_search"])
-    if contains_any(normalized, ("relation", "related", "path", "entity", "graph", "связано", "связь", "путь", "граф", "сущност")):
+    if is_graph_query(query, normalized):
         routes.extend(["graph_search", "summary_rag"])
-    if contains_any(normalized, ("paper", "papers", "article", "articles", "publication", "publications", "литератур", "стать", "публикац", "свеж")):
+    if contains_any(normalized, WEB_LITERATURE_TERMS):
         routes.extend(["web_search", "internal_rag"])
     if contains_any(normalized, ("source", "evidence", "where written", "где написано", "источник", "доказательств", "подтвержд")):
         routes.append("raw_rag")
@@ -307,6 +411,40 @@ def infer_answer_format(intent: Intent, routes: list[RouteName]) -> AnswerFormat
     return "short_answer"
 
 
+def build_entity_aliases(query: str, entities: QueryEntities) -> dict[str, list[str]]:
+    aliases = material_phrase_aliases(query)
+    for material in entities.materials:
+        aliases.setdefault(material, [material])
+    return {key: unique(values, limit=16) for key, values in aliases.items()}
+
+
+def build_slots(entities: QueryEntities) -> dict[str, list[str]]:
+    return {
+        "materials": entities.materials,
+        "processes": entities.processes,
+        "equipment": entities.equipment,
+        "properties": entities.properties,
+        "experts": entities.experts,
+        "facilities": entities.facilities,
+    }
+
+
+def clean_search_queries(query: str, entities: QueryEntities, *, web: bool = False) -> list[str]:
+    aliases = build_entity_aliases(query, entities)
+    alias_values = [alias for values in aliases.values() for alias in values]
+    keywords = extract_keywords(query, max_keywords=8)
+    base = compact_text(query)
+    variants = [base]
+    variants.extend(alias_values)
+    if keywords:
+        variants.append(" ".join(keywords))
+    if web:
+        for alias in alias_values[:6]:
+            variants.append(f"{alias} metallurgy")
+            variants.append(f"{alias} materials science")
+    return unique(variants, limit=12)
+
+
 def route_query_variants(query: str, entities: QueryEntities, routes: list[RouteName]) -> RewrittenQueries:
     keywords = extract_keywords(query, max_keywords=10)
     keyword_query = " ".join(keywords)
@@ -317,9 +455,11 @@ def route_query_variants(query: str, entities: QueryEntities, routes: list[Route
     entity_query = " ".join(entity_terms)
     numbers = " ".join(numeric_terms(query))
     base = compact_text(query)
+    internal_queries = clean_search_queries(query, entities)
+    web_queries = clean_search_queries(query, entities, web=True)
 
     def variants(*extra: str) -> list[str]:
-        return unique([base, keyword_query, entity_query, *extra], limit=6)
+        return unique([base, *internal_queries, keyword_query, entity_query, *extra], limit=8)
 
     rewritten = RewrittenQueries()
     if "raw_rag" in routes or "internal_rag" in routes:
@@ -331,7 +471,7 @@ def route_query_variants(query: str, entities: QueryEntities, routes: list[Route
     if "table_search" in routes:
         rewritten.tables = variants(numbers, " ".join(entities.properties))
     if "web_search" in routes:
-        rewritten.web = variants(base + " materials science", base + " metallurgy publication")
+        rewritten.web = unique(web_queries + [base + " materials science", base + " metallurgy publication"], limit=10)
     return rewritten
 
 
@@ -367,14 +507,21 @@ def plan_query(query: str) -> QueryPlan:
     original = compact_text(query, 1000)
     entities = infer_entities(original)
     intent = infer_intent(original, entities)
-    routes = routes_for_query(original, intent)
+    routes = routes_for_query(original, intent, entities)
     needs_clarification, clarifying_question = clarification_state(original, entities)
+    internal_queries = clean_search_queries(original, entities)
+    web_queries = clean_search_queries(original, entities, web=True)
+    aliases = build_entity_aliases(original, entities)
     return QueryPlan(
         original_query=original,
         intent=intent,
         domain=infer_domain(original),
         entities=entities,
         rewritten_queries=route_query_variants(original, entities, routes),
+        internal_search_queries=internal_queries,
+        web_search_queries=web_queries,
+        entity_aliases=aliases,
+        slots=build_slots(entities),
         decomposed_questions=decompose_questions(original, intent, entities, routes),
         routes=routes,
         answer_format=infer_answer_format(intent, routes),

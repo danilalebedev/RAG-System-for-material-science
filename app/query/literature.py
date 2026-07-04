@@ -21,11 +21,13 @@ from app.web_search.comparison import (
 from app.web_search.deep_search import build_yandex_client_from_env, run_deep_search
 from app.web_search.journal_quality import load_quartile_map
 from app.web_search.keywords import extract_keywords
+from app.web_search.open_access import OpenAccessResolver
 from app.web_search.resource_links import build_resource_links
 from app.web_search.schemas import LiteratureSearchRequest, LiteratureSearchRun
 
 
 def plan_keywords(plan: QueryPlan, fallback_query: str) -> list[str]:
+    aliases = [alias for values in getattr(plan, "entity_aliases", {}).values() for alias in values]
     entity_terms = (
         plan.entities.materials
         + plan.entities.processes
@@ -34,7 +36,7 @@ def plan_keywords(plan: QueryPlan, fallback_query: str) -> list[str]:
         + plan.entities.experts
         + plan.entities.facilities
     )
-    return list(dict.fromkeys(entity_terms + extract_keywords(fallback_query)))
+    return list(dict.fromkeys(entity_terms + aliases + extract_keywords(fallback_query)))
 
 
 def first_variant(values: list[str], fallback: str) -> str:
@@ -104,6 +106,34 @@ def publication_records(project_root: Path, include_local_search: bool) -> tuple
     return local_publications, local_document_summaries, local_procedures
 
 
+def enrich_open_access(results: list[Any], warnings: list[str], *, limit: int = 10) -> None:
+    resolver = OpenAccessResolver()
+    for result in results[:limit]:
+        try:
+            oa = resolver.resolve(doi=result.doi, title=result.title, year=result.year).as_dict()
+        except Exception as exc:
+            warnings.append(f"Open access resolver skipped for '{result.title[:80]}': {exc}")
+            oa = {
+                "title": result.title,
+                "doi": result.doi or "",
+                "year": str(result.year or ""),
+                "open_access": bool(result.open_access_pdf_url),
+                "access_status": "open" if result.open_access_pdf_url else "unknown",
+                "best_pdf_url": str(result.open_access_pdf_url or ""),
+                "landing_page_url": str(result.url or ""),
+                "source": result.source,
+                "license": "",
+                "evidence": ["Resolver failed; using search-result metadata."],
+            }
+        if not oa.get("best_pdf_url") and result.open_access_pdf_url:
+            oa["best_pdf_url"] = str(result.open_access_pdf_url)
+            oa["open_access"] = True
+            oa["access_status"] = "open"
+        if not oa.get("landing_page_url") and result.url:
+            oa["landing_page_url"] = str(result.url)
+        result.open_access = oa
+
+
 def yandex_client(project_root: Path, yandex_client_arg: Any | None = None) -> Any | None:
     if yandex_client_arg is not None:
         return yandex_client_arg
@@ -120,9 +150,9 @@ def run_literature_search(
 ) -> LiteratureSearchRun:
     query_plan = plan_query(request.query)
     keywords = plan_keywords(query_plan, request.query)
-    local_query = first_variant(query_plan.rewritten_queries.summary_rag or query_plan.rewritten_queries.raw_rag, query_plan.original_query)
-    web_query = first_variant(query_plan.rewritten_queries.web, query_plan.original_query)
-    web_variants = query_plan.rewritten_queries.web or [web_query]
+    local_query = first_variant(query_plan.internal_search_queries, query_plan.original_query)
+    web_query = first_variant(query_plan.web_search_queries, query_plan.original_query)
+    web_variants = query_plan.web_search_queries or query_plan.rewritten_queries.web or [web_query]
     output_root = output_root or (project_root / "data" / "processed" / "web_search")
     run_id = safe_run_id(request.run_id or utc_run_id(request.query))
     output_dir = output_root / run_id
@@ -150,7 +180,9 @@ def run_literature_search(
         top_k=request.top_k,
         query_variants=web_variants,
         materials_only=request.materials_only,
+        relevance_terms=[alias for values in query_plan.entity_aliases.values() for alias in values],
     )
+    enrich_open_access(results, warnings, limit=min(request.top_k, 10))
     resource_links = []
     if request.include_recommended_resource_links:
         resource_links = build_resource_links(
@@ -161,7 +193,7 @@ def run_literature_search(
 
     deep_results = []
     if request.deep_search == "top5":
-        llm_client = yandex_client or rewrite_client or build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
+        llm_client = yandex_client if yandex_client is not None else build_yandex_client_from_env(project_root / "config" / "extraction" / "publication_metadata.json")
         deep_results = run_deep_search(
             results=results,
             output_dir=output_dir,

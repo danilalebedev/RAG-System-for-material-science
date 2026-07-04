@@ -61,6 +61,16 @@ def query_terms(query: str) -> list[str]:
     return result
 
 
+def expanded_query_terms(query: str) -> list[str]:
+    terms = query_terms(query)
+    normalized = normalize_text(query)
+    nickel = any(term in normalized for term in ("nickel", "ni", "никел"))
+    ore = any(term in normalized for term in ("ore", "ores", "руда", "руды", "руд"))
+    if nickel and ore:
+        terms.extend(["никелевая", "никелевые", "никель", "nickel", "ni", "ore", "ores", "руда"])
+    return list(dict.fromkeys(terms))
+
+
 def node_text(node: dict[str, Any]) -> str:
     metadata = node.get("metadata") or {}
     aliases = node.get("aliases") or []
@@ -92,7 +102,7 @@ def search_entities(
     node_type: str | None = None,
     top_k: int = 20,
 ) -> list[EntityHit]:
-    terms = query_terms(query)
+    terms = expanded_query_terms(query)
     hits: list[EntityHit] = []
     for node in nodes.values():
         if node_type and node.get("type") != node_type:
@@ -166,4 +176,3 @@ def paths_to_types(
                     break
             queue.append((next_id, next_path, seen | {next_id}))
     return found
-
