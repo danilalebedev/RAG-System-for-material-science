@@ -62,15 +62,15 @@ def test_run_smoke_orchestrates_three_current_modes(monkeypatch, tmp_path) -> No
     payload = smoke_demo_scenarios.run_smoke(output_root=tmp_path)
 
     assert payload["status"] == "ok"
-    assert [row["mode"] for row in payload["scenarios"]] == ["Литературный поиск", "Поиск методик", "Поиск свойств"]
+    assert [row["mode"] for row in payload["scenarios"]] == ["Литературный поиск", "Анализ методик и свойств", "Бизнес-аналитика"]
     assert calls[0][0] == "literature"
-    assert calls[1][0] == "Поиск методик"
-    assert calls[2][0] == "Поиск свойств"
+    assert calls[1][0] == "Анализ методик и свойств"
+    assert calls[2][0] == "Бизнес-аналитика"
 
 
 def test_write_smoke_report_writes_utf8_json(tmp_path) -> None:
-    payload = {"status": "ok", "scenarios": [{"mode": "Поиск свойств"}]}
+    payload = {"status": "ok", "scenarios": [{"mode": "Бизнес-аналитика"}]}
     output = smoke_demo_scenarios.write_smoke_report(tmp_path / "smoke_report.json", payload)
 
     assert output.exists()
-    assert "Поиск свойств" in output.read_text(encoding="utf-8")
+    assert "Бизнес-аналитика" in output.read_text(encoding="utf-8")

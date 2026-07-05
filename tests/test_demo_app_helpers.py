@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.ui.demo_app import answer_metrics, comparison_answer_sections, local_rows_from_literature, search_context_rows, source_rows, workflow_summary_rows
+from app.ui.demo_app import (
+    answer_metrics,
+    comparison_answer_sections,
+    local_rows_from_literature,
+    market_radar_rows,
+    method_comparison_rows,
+    search_context_rows,
+    should_run_market_radar,
+    source_rows,
+    workflow_summary_rows,
+)
 
 
 def test_search_context_rows_are_user_facing() -> None:
@@ -81,7 +91,7 @@ def test_workflow_summary_rows_explain_orchestration_without_json() -> None:
 
     rows = workflow_summary_rows(
         {
-            "request_type": "Поиск методик",
+            "request_type": "Анализ методик и свойств",
             "literature_run": run,
             "orchestration": orchestration,
             "answer": answer,
@@ -97,6 +107,67 @@ def test_workflow_summary_rows_explain_orchestration_without_json() -> None:
     assert "summary extraction выполнен" in text
     assert "deepseek/deepseek-chat-v3.1" in text
     assert not any({"retrieved_context", "plan", "query_rewrite"} & set(row) for row in rows)
+
+
+def test_method_comparison_rows_are_user_facing_for_business_mode() -> None:
+    comparison = SimpleNamespace(
+        as_dict=lambda: {
+            "rows": [
+                {
+                    "item": "reverse osmosis",
+                    "score": 8.7,
+                    "materials": ["mine water"],
+                    "conditions": ["TDS 1000 mg/L"],
+                    "numeric_values": ["200-300 mg/L sulfate"],
+                    "business_context": ["energy", "opex"],
+                    "limitations": ["membrane fouling"],
+                    "evidence": [{"citation": "tables:1", "title": "water treatment economics"}],
+                }
+            ]
+        }
+    )
+
+    rows = method_comparison_rows({"request_type": "Бизнес-аналитика", "method_comparison": comparison})
+
+    assert list(rows[0]) == [
+        "#",
+        "Релевантность /10",
+        "Решение / технология",
+        "Где применимо",
+        "Условия / KPI",
+        "Экономика",
+        "Риски / ограничения",
+        "Источники",
+    ]
+    assert rows[0]["Экономика"] == "energy; opex"
+    assert "[tables:1]" in rows[0]["Источники"]
+
+
+def test_market_radar_rows_are_compact_user_facing() -> None:
+    market_row = SimpleNamespace(
+        commodity="nickel",
+        company_or_country="Nornickel",
+        period="2024",
+        value=205,
+        unit="kt",
+        source_name="Nornickel production reports",
+        confidence="high",
+    )
+    radar = SimpleNamespace(production_rows=[market_row])
+
+    rows = market_radar_rows({"market_radar": radar})
+
+    assert rows[0]["Показатель"] == "nickel"
+    assert rows[0]["Значение"] == 205
+    assert rows[0]["Источник"] == "Nornickel production reports"
+
+
+def test_market_radar_runs_only_for_market_like_queries() -> None:
+    assert should_run_market_radar("Сравни производство стали в России и Китае за 2024 год")
+    assert should_run_market_radar("Доли компаний на рынке никеля")
+    assert not should_run_market_radar(
+        "Технико-экономическое сравнение вариантов подготовки воды для обогатительной фабрики"
+    )
 
 
 def test_publication_tables_are_compact_user_facing() -> None:

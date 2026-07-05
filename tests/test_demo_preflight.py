@@ -88,7 +88,7 @@ def test_check_demo_ui_contract_reports_current_public_modes() -> None:
     result = demo_preflight.check_demo_ui_contract(Path(__file__).resolve().parents[1])
 
     assert result["status"] == "pass"
-    assert result["request_types"] == ["Литературный поиск", "Поиск методик", "Поиск свойств"]
+    assert result["request_types"] == ["Литературный поиск", "Анализ методик и свойств", "Бизнес-аналитика"]
     assert result["issues"] == []
 
 

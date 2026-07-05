@@ -1,5 +1,30 @@
 # 04. Query + GUI + Evaluation
 
+## 2026-07-05 update: production demo modes
+
+GUI now exposes three product modes in `app/ui/demo_app.py`:
+
+- `Литературный поиск`: literature-first workflow with local publication evidence, optional web metadata search, optional Deep Search summaries, and DOCX/PDF/user-facing exports.
+- `Анализ методик и свойств`: local RAG + summary RAG + Excel/table search + graph evidence. The result is a user-facing method/property report plus a compact comparison table with clickable/openable evidence links.
+- `Бизнес-аналитика`: same local evidence layer as method analysis, plus optional Market Radar for market/production/company/country queries. Market Radar is intentionally gated by query intent, so technical-economic method questions do not get irrelevant global production charts.
+
+Main technical changes:
+
+- `app/query/orchestrator.py` accepts `local_top_k`, exposes stable citation ids for raw/summary/table/graph rows, and supports answer modes (`methods`, `business`) with extra context.
+- `app/query/comparison.py` builds method/property/business comparison rows from summaries, web summaries, Excel tables, and graph rows. It now applies domain gating for water-treatment and electrolysis requests, hides placeholder `Method N` rows, and avoids using source-title coincidences as proof of method relevance.
+- `app/market/radar.py` remains the market-data backend; `app/ui/demo_app.py::should_run_market_radar` decides when it is useful to run it. For market-like queries it returns production/share rows and charts; for pure technology economics it stays off.
+- `app/query/reports.py` can append extra user-facing sections to DOCX/PDF answer exports, so method/business tables and market rows are included in generated reports without exposing JSON/Markdown to the GUI user.
+- `scripts/demo_preflight.py` and `scripts/smoke_demo_scenarios.py` were updated to validate the three current modes.
+
+Validated commands:
+
+- `.\.venv\Scripts\python.exe -m compileall app scripts`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_demo_app_helpers.py tests\test_demo_preflight.py tests\test_demo_scenarios_smoke.py tests\test_comparison_mode.py tests\test_query_planner.py tests\test_market_radar.py -q`
+- `.\.venv\Scripts\python.exe scripts\demo_preflight.py`
+- `.\.venv\Scripts\python.exe scripts\smoke_demo_scenarios.py --output-root data\processed\demo_smoke_current`
+
+Manual relevance check used the two organizer-style prompts for water-treatment economics and electrolyte-cell design, plus one market prompt for nickel/copper production shares. Current behavior: Market Radar is off for water-treatment economics, on for production/share queries, and the method table is filtered to domain-relevant rows.
+
 Дата обновления: 2026-07-04.
 
 Статус: будущая интеграционная зона. Сейчас не активна: сначала должны появиться

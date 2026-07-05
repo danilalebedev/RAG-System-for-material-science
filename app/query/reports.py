@@ -1239,6 +1239,28 @@ def build_answer_report_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
+def append_report_sections_markdown(lines: list[str], sections: list[dict[str, Any]]) -> None:
+    for section in sections:
+        lines.extend([f"## {section['title']}", ""])
+        for paragraph_text in section.get("paragraphs") or []:
+            lines.extend([compact_text(paragraph_text, 1800), ""])
+        for block in section.get("blocks") or []:
+            if block["type"] == "heading":
+                lines.extend([f"### {block['text']}", ""])
+            elif block["type"] == "bullet":
+                lines.append(f"- {block['text']}")
+            else:
+                lines.extend([block["text"], ""])
+        table = section.get("table")
+        if table:
+            headers = table["headers"]
+            lines.append(" | ".join(headers))
+            lines.append(" | ".join("---" for _ in headers))
+            for row in table["rows"]:
+                lines.append(" | ".join(compact_text(value, 700) for value in row))
+            lines.append("")
+
+
 def build_answer_docx_from_sections(sections: list[dict[str, Any]], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
@@ -1314,12 +1336,19 @@ def build_answer_exports(
     answer: Any | None,
     run: Any | None = None,
     orchestration: Any | None = None,
+    extra_sections: list[dict[str, Any]] | None = None,
     prefix: str = "routerai_answer",
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", prefix.lower()).strip("_") or "routerai_answer"
     sections = answer_report_sections(query=query, answer=answer, run=run, orchestration=orchestration)
+    if extra_sections:
+        sections.extend(extra_sections)
     markdown = build_answer_report_markdown(query=query, answer=answer, run=run, orchestration=orchestration)
+    if extra_sections:
+        markdown_lines = [markdown.strip(), ""]
+        append_report_sections_markdown(markdown_lines, extra_sections)
+        markdown = "\n".join(markdown_lines).strip() + "\n"
     md_path = write_text_report(output_dir / f"{safe_prefix}.md", markdown)
     docx_path = build_answer_docx_from_sections(sections, output_dir / f"{safe_prefix}.docx")
     pdf_path = convert_docx_to_pdf(docx_path, output_dir / f"{safe_prefix}.pdf") or build_answer_pdf_from_sections(

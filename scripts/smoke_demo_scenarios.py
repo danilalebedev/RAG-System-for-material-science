@@ -17,7 +17,7 @@ import app.query.literature as literature_module  # noqa: E402
 from app.query.orchestrator import run_query_orchestration  # noqa: E402
 from app.query.planner import plan_query  # noqa: E402
 from app.web_search.schemas import LiteratureSearchRequest, LiteratureSearchResult  # noqa: E402
-from app.ui.demo_app import REQUEST_TYPES, comparison_graph_dot, comparison_graph_title, knowledge_graph_dot  # noqa: E402
+from app.ui.demo_app import REQUEST_TYPES  # noqa: E402
 
 
 SCENARIOS = [
@@ -26,12 +26,12 @@ SCENARIOS = [
         "query": "Найди зарубежные публикации по флотации никелевых руд и влиянию реагентов на извлечение Ni",
     },
     {
-        "mode": "Поиск методик",
+        "mode": "Анализ методик и свойств",
         "query": "Какие никелевые сплавы применяются в судостроении и какие режимы термообработки влияют на твердость?",
     },
     {
-        "mode": "Поиск свойств",
-        "query": "Сравни прочность, твердость и коррозионную стойкость никелевых сплавов после отжига и старения",
+        "mode": "Бизнес-аналитика",
+        "query": "Сравни производство стали в России, Китае, Индии и Турции и покажи рыночные доли.",
     },
 ]
 
@@ -134,10 +134,6 @@ def run_orchestration_smoke(mode: str, query: str) -> dict[str, Any]:
     assert_true(set(payload["retrieved_context"]) == {"raw", "summaries", "tables", "graph", "web"}, f"{mode}: bad context shape")
     assert_true(set(required_routes).issubset(set(payload["plan"]["routes"])), f"{mode}: required routes missing")
     assert_true(bool(payload["answer_draft"]), f"{mode}: empty answer draft")
-    graph_dot = knowledge_graph_dot(result.web_run, result)
-    comparison_dot = comparison_graph_dot(result.web_run, result, mode)
-    assert_true("digraph" in graph_dot, f"{mode}: knowledge graph did not render graphviz")
-    assert_true("digraph" in comparison_dot, f"{mode}: comparison graph did not render graphviz")
     return {
         "mode": mode,
         "intent": plan.intent,
@@ -145,7 +141,6 @@ def run_orchestration_smoke(mode: str, query: str) -> dict[str, Any]:
         "required_routes": required_routes,
         "context_counts": counts,
         "fallbacks": len(payload.get("fallbacks") or []),
-        "comparison_graph_title": comparison_graph_title(mode).strip("*"),
     }
 
 

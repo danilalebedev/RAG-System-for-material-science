@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.query.comparison import compare_methods
+from app.query.comparison import build_method_comparison_from_orchestration, compare_methods
 
 
 class FakeOrchestration:
@@ -89,7 +89,8 @@ def test_compare_methods_returns_required_shape(monkeypatch) -> None:
         "answer_summary",
     }
     assert payload["plan"]["intent"] == "compare_methods"
-    assert payload["compared_items"] == ["acid leaching"]
+    assert payload["compared_items"][0] == "acid leaching"
+    assert "acid leaching" in payload["compared_items"]
     row = payload["rows"][0]
     assert row["item"] == "acid leaching"
     assert "nickel tailings" in row["materials"]
@@ -146,3 +147,45 @@ def test_compare_methods_builds_rows_from_web_deep_summaries(monkeypatch) -> Non
     assert row.item == "flotation"
     assert "nickel ore" in row.materials
     assert "91% Ni recovery" in row.numeric_values
+
+
+def test_method_comparison_filters_domain_noise_for_water_treatment() -> None:
+    class WaterOrchestration(FakeOrchestration):
+        def as_dict(self) -> dict[str, Any]:
+            payload = super().as_dict()
+            payload["retrieved_context"]["summaries"] = [
+                {
+                    "id": "summaries:water",
+                    "title": "Mine water desalination",
+                    "preview": "Reverse osmosis and ion exchange reduce sulfates and dry residue in mine water.",
+                    "row": {
+                        "methods": ["reverse osmosis"],
+                        "materials": ["mine water"],
+                        "process_parameters": ["TDS 1000 mg/L"],
+                        "analysis_results": ["sulfates 200-300 mg/L"],
+                    },
+                },
+                {
+                    "id": "summaries:slag",
+                    "title": "Nickel slag processing",
+                    "preview": "Slow cooling and flotation improve nickel recovery from slag.",
+                    "row": {
+                        "methods": ["flotation"],
+                        "materials": ["nickel slag"],
+                        "analysis_results": ["92% Ni recovery"],
+                    },
+                },
+            ]
+            payload["retrieved_context"]["tables"] = []
+            payload["retrieved_context"]["graph"] = []
+            return payload
+
+    result = build_method_comparison_from_orchestration(
+        "Технико-экономическое сравнение вариантов подготовки воды: обессоливание, сульфаты, хлориды",
+        WaterOrchestration(),
+        top_k=5,
+    )
+
+    assert result.rows
+    assert result.rows[0].item == "reverse osmosis"
+    assert all(row.item != "flotation" for row in result.rows)

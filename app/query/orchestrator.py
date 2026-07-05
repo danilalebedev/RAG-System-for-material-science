@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,30 @@ ORCHESTRATION_SYSTEM_PROMPT = """Ты RAG-ассистент для научно
 Отвечай только по retrieved evidence. Если данных недостаточно, скажи об этом явно.
 Для сравнений методик используй summary/procedure evidence, raw-фрагменты и таблицы. Не выдумывай численные значения, условия, оборудование и ссылки.
 Структурируй ответ по-русски: краткий вывод, подтверждающие источники, ограничения и следующие шаги."""
+
+METHOD_COMPARISON_SYSTEM_PROMPT = ORCHESTRATION_SYSTEM_PROMPT + """
+
+Сценарий: сравнение методик и технических решений.
+Собери ответ как пользовательский отчет, без служебной диагностики:
+1. Краткий вывод: какие 2-4 решения выглядят наиболее перспективными и почему.
+2. Сравнение лучших методик: принцип, применимость, условия/параметры, оборудование, плюсы, ограничения.
+3. Технико-экономический контекст: реагенты, энергозатраты, CAPEX/OPEX/TCO, производительность, эксплуатационные риски, если такие данные есть в evidence.
+4. Что подтверждено источниками и где есть пробелы.
+
+Обязательно ставь ссылки на evidence в формате [raw:1], [summaries:1], [tables:1], [graph:1] или [web:1], используя только citation labels из контекста.
+Если таблицы или граф дают только косвенное подтверждение, так и напиши."""
+
+BUSINESS_ANALYSIS_SYSTEM_PROMPT = ORCHESTRATION_SYSTEM_PROMPT + """
+
+Сценарий: бизнес-анализ и технико-экономическое сравнение.
+Собери ответ как управленческий отчет, без служебной диагностики:
+1. Краткий вывод: какие решения экономически предпочтительны и при каких ограничениях.
+2. Таблица сравнения вариантов: технология, применимость, CAPEX/OPEX/TCO или косвенные cost-драйверы, энергопотребление, реагенты, производительность, экологические ограничения, зрелость/риски.
+3. Что известно из локальной базы, таблиц и внешней литературы.
+4. Какие данные нужно дозапросить для полноценного расчета.
+
+Не выдумывай цены и экономические показатели. Если прямых CAPEX/OPEX нет, оценивай только качественные cost-драйверы, явно помечая их как косвенные.
+Обязательно ставь ссылки на evidence в формате [raw:1], [summaries:1], [tables:1], [graph:1] или [web:1], используя только citation labels из контекста."""
 
 INDEXED_SUMMARY_SOURCE_TYPES = {"document_summary", "procedure_summary"}
 
@@ -262,11 +286,35 @@ def trim_rows_keep_diagnostics(rows: list[dict[str, Any]], *, limit: int) -> lis
 
 
 def summary_rows(hits: list[SummaryHit]) -> list[dict[str, Any]]:
-    return [hit.as_dict() for hit in hits]
+    rows: list[dict[str, Any]] = []
+    for hit in hits:
+        row = hit.as_dict()
+        row.setdefault("id", f"summaries:{hit.rank}")
+        row.setdefault("source_type", hit.kind)
+        row.setdefault("title", hit.title)
+        row.setdefault("preview", hit.preview)
+        rows.append(row)
+    return rows
 
 
 def table_rows(hits: list[TableHit]) -> list[dict[str, Any]]:
-    return [hit.as_dict() for hit in hits]
+    rows: list[dict[str, Any]] = []
+    for hit in hits:
+        row = hit.as_dict()
+        summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+        matched_rows = row.get("rows") or []
+        preview_parts = [
+            summary.get("preview"),
+            "; ".join(str(item) for item in matched_rows[:3]),
+        ]
+        row.setdefault("id", f"tables:{hit.rank}")
+        row.setdefault("title", summary.get("source_path") or summary.get("path") or summary.get("table_id") or f"Table {hit.rank}")
+        row.setdefault("source_path", summary.get("source_path") or summary.get("path") or "")
+        row.setdefault("path", summary.get("path") or "")
+        row.setdefault("preview", " ".join(str(part) for part in preview_parts if part)[:1200])
+        row.setdefault("source_type", "table")
+        rows.append(row)
+    return rows
 
 
 def graph_rows(hits: list[dict[str, Any]], neighbors: list[dict[str, Any]], paths: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -627,6 +675,7 @@ def run_query_orchestration(
     generate_pdf_report: bool = False,
     required_routes: list[RouteName] | None = None,
     retrieval_profile: str | None = None,
+    local_top_k: int | None = None,
     use_query_rewrite: bool = True,
     use_llm_query_rewrite: bool = False,
     rewrite_client: CompletionClient | None = None,
@@ -651,6 +700,15 @@ def run_query_orchestration(
     if include_web and "web_search" not in plan.routes:
         plan = plan.model_copy(update={"routes": [*plan.routes, "web_search"]})
     config = local_config_for_routes(plan, project_root=project_root)
+    if local_top_k is not None:
+        bounded_top_k = min(max(int(local_top_k), 1), 100)
+        config = replace(
+            config,
+            top_k_raw=bounded_top_k,
+            top_k_summary=bounded_top_k,
+            top_k_tables=min(max(4, bounded_top_k // 2), bounded_top_k),
+            top_k_graph=min(max(8, bounded_top_k // 2), bounded_top_k),
+        )
     routes: set[RouteName] = set(plan.routes)
     use_internal = "internal_rag" in routes
     fallbacks: list[dict[str, Any]] = []
@@ -714,7 +772,7 @@ def format_orchestration_context(result: QueryOrchestrationResult, *, max_chars:
         if not rows:
             continue
         lines = [f"## {section}"]
-        for index, row in enumerate(rows[:8], start=1):
+        for index, row in enumerate(rows[:12], start=1):
             if row.get("source_type") == "diagnostics":
                 continue
             label = row.get("id") or row.get("citation") or f"{section.lower()}:{index}"
@@ -722,8 +780,9 @@ def format_orchestration_context(result: QueryOrchestrationResult, *, max_chars:
             preview = row.get("preview") or row.get("summary") or row.get("path") or row.get("relation") or ""
             components = row.get("score_components") or {}
             why = row.get("why") or row.get("matched_terms") or []
+            locator = row.get("url") or row.get("doi") or row.get("local_path") or row.get("source_path") or row.get("path") or row.get("node_id") or ""
             lines.append(
-                f"[{label}] title={title}; score={row.get('score')}; components={components}; why={why}\n{str(preview)[:1400]}"
+                f"citation=[{label}] title={title}; score={row.get('score')}; locator={locator}; components={components}; why={why}\n{str(preview)[:1400]}"
             )
         block = "\n".join(lines)
         if used + len(block) + 2 > max_chars:
@@ -740,12 +799,22 @@ def answer_with_provider_router(
     project_root: Path = PROJECT_ROOT,
     max_tokens: int = 900,
     temperature: float = 0.2,
+    answer_mode: str | None = None,
+    extra_context: str | None = None,
 ) -> LLMResponse:
     router = ProviderRouter.from_env(root=project_root, primary_provider="routerai")
     context = format_orchestration_context(result)
+    if extra_context:
+        context = f"{context}\n\n## BUSINESS / MARKET DATA\n{extra_context.strip()}"
+    if answer_mode == "business":
+        system_prompt = BUSINESS_ANALYSIS_SYSTEM_PROMPT
+    elif answer_mode in {"methods", "comparison"} or result.plan.answer_format == "comparison_table":
+        system_prompt = METHOD_COMPARISON_SYSTEM_PROMPT
+    else:
+        system_prompt = ORCHESTRATION_SYSTEM_PROMPT
     return router.ask(
         query,
-        system_prompt=ORCHESTRATION_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         context=context,
         max_tokens=max_tokens,
         temperature=temperature,

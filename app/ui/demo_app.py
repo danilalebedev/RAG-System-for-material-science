@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.market.radar import detect_market_query, run_market_radar  # noqa: E402
+from app.market.sources import SOURCE_REGISTRY  # noqa: E402
 from app.query.cockpit import graphviz_dot as literature_graphviz_dot  # noqa: E402
 from app.query.literature import (  # noqa: E402
     answer_literature_with_provider_router,
@@ -25,6 +27,7 @@ from app.query.literature import (  # noqa: E402
     run_literature_search,
     write_run_outputs,
 )
+from app.query.comparison import build_method_comparison_from_orchestration  # noqa: E402
 from app.query.orchestrator import answer_with_provider_router, run_query_orchestration  # noqa: E402
 from app.query.reports import (  # noqa: E402
     build_answer_exports,
@@ -55,8 +58,8 @@ load_dotenv(ROOT / ".env", encoding="utf-8-sig")
 
 REQUEST_TYPES = {
     "Литературный поиск": ["summary_rag", "raw_rag"],
-    "Поиск методик": ["summary_rag", "raw_rag", "table_search", "graph_search"],
-    "Поиск свойств": ["raw_rag", "summary_rag", "table_search", "graph_search"],
+    "Анализ методик и свойств": ["summary_rag", "raw_rag", "table_search", "graph_search"],
+    "Бизнес-аналитика": ["summary_rag", "raw_rag", "table_search", "graph_search"],
 }
 ROUTE_LABELS = {
     "raw_rag": "Raw RAG",
@@ -65,6 +68,38 @@ ROUTE_LABELS = {
     "graph_search": "Knowledge graph",
     "web_search": "Web literature",
 }
+MARKET_RADAR_TERMS = (
+    "рынок",
+    "рыноч",
+    "доля",
+    "доли",
+    "объем рынка",
+    "объём рынка",
+    "производств",
+    "выпуск",
+    "выручк",
+    "продаж",
+    "компани",
+    "страна",
+    "экспорт",
+    "импорт",
+    "market",
+    "share",
+    "production",
+    "producer",
+    "company",
+    "country",
+    "export",
+    "import",
+)
+
+
+def should_run_market_radar(query: str) -> bool:
+    detected = detect_market_query(query)
+    if detected.commodities or detected.companies or detected.countries:
+        return True
+    folded = query.casefold()
+    return any(term in folded for term in MARKET_RADAR_TERMS)
 
 
 def display_value(value: Any, *, max_chars: int = 900) -> Any:
@@ -207,6 +242,283 @@ def comparison_rows(run: Any | None, name: str) -> list[dict[str, Any]]:
     if run is None or not getattr(run, "comparison", None):
         return []
     return list(getattr(run.comparison, name, []) or [])
+
+
+def evidence_label(evidence: list[dict[str, Any]], *, limit: int = 4) -> str:
+    labels: list[str] = []
+    for item in evidence[:limit]:
+        citation = item.get("citation")
+        title = item.get("title") or item.get("locator") or ""
+        if citation:
+            labels.append(f"[{citation}] {compact_text(title, 80)}")
+    return "; ".join(labels)
+
+
+def method_comparison_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    comparison = record.get("method_comparison")
+    if comparison is None:
+        return []
+    rows = comparison.as_dict().get("rows") if hasattr(comparison, "as_dict") else getattr(comparison, "rows", [])
+    result: list[dict[str, Any]] = []
+    is_business = record.get("request_type") == "Бизнес-аналитика"
+    for index, row in enumerate(rows or [], start=1):
+        payload = row if isinstance(row, dict) else row.as_dict()
+        base = {
+            "#": index,
+            "Релевантность /10": payload.get("score") or "",
+            "Решение / технология": payload.get("item") or "",
+            "Где применимо": "; ".join(_as_text_list(payload.get("materials"), limit=4)),
+            "Условия / KPI": "; ".join(_as_text_list(payload.get("conditions") or payload.get("properties") or payload.get("numeric_values"), limit=5)),
+        }
+        if is_business:
+            base["Экономика"] = "; ".join(_as_text_list(payload.get("business_context") or payload.get("numeric_values"), limit=6))
+            base["Риски / ограничения"] = "; ".join(_as_text_list(payload.get("limitations"), limit=4))
+        else:
+            base["Численные значения"] = "; ".join(_as_text_list(payload.get("numeric_values"), limit=5))
+            base["Плюсы / эффекты"] = "; ".join(_as_text_list(payload.get("advantages"), limit=4))
+        base["Источники"] = evidence_label(payload.get("evidence") or [])
+        result.append(base)
+    return result
+
+
+def orchestration_source_rows(orchestration: Any | None) -> list[dict[str, Any]]:
+    if orchestration is None:
+        return []
+    context = orchestration.retrieved_context.as_dict()
+    all_rows: list[tuple[str, dict[str, Any]]] = []
+    for section in ("raw", "summaries", "tables", "graph"):
+        for row in context.get(section) or []:
+            if row.get("source_type") == "diagnostics":
+                continue
+            all_rows.append((section, row))
+    max_score = max([numeric_score(row.get("score")) for _, row in all_rows] or [1.0])
+    labels = {"raw": "Raw RAG", "summaries": "Summary", "tables": "Excel/Table", "graph": "Graph"}
+    rows: list[dict[str, Any]] = []
+    for index, (section, row) in enumerate(all_rows[:60], start=1):
+        rows.append(
+            {
+                "#": index,
+                "Тип": labels.get(section, section),
+                "Релевантность /10": score_out_of_10(row.get("score"), max_score),
+                "Источник": row.get("title") or row.get("label") or row.get("doc_id") or row.get("source_path") or row.get("id"),
+                "Фрагмент": row.get("preview") or row.get("summary") or row.get("path") or row.get("relation") or "",
+            }
+        )
+    return rows
+
+
+def render_orchestration_source_links(orchestration: Any | None) -> None:
+    if orchestration is None:
+        return
+    context = orchestration.retrieved_context.as_dict()
+    rows = [row for name in ("raw", "summaries", "tables") for row in (context.get(name) or []) if row.get("source_type") != "diagnostics"]
+    if not rows:
+        return
+    render_soft_heading("Локальные источники и таблицы")
+    shown = 0
+    for index, row in enumerate(rows[:40], start=1):
+        found = local_file_for_row(row)
+        link = row.get("url") or ""
+        title = source_title(row)
+        cols = st.columns([7, 1.6, 1.6])
+        cols[0].write(f"{index}. {compact_text(title, 240)}")
+        if link and str(link).startswith(("http://", "https://")):
+            shown += 1
+            cols[1].link_button("Открыть", str(link), use_container_width=True)
+            cols[2].download_button(
+                "Скачать",
+                data=web_shortcut_bytes(str(link)),
+                file_name=f"{index:02d}_source.url",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key=f"orchestration_source_url_{index}_{safe_report_id(link, prefix='src')}",
+            )
+        elif found is not None:
+            shown += 1
+            cols[1].link_button("Открыть", found.resolve().as_uri(), use_container_width=True)
+            cols[2].download_button(
+                "Скачать",
+                data=found.read_bytes(),
+                file_name=found.name,
+                mime="application/octet-stream",
+                use_container_width=True,
+                key=f"orchestration_source_file_{index}_{safe_report_id(found, prefix='src')}",
+            )
+        else:
+            cols[1].caption("Нет файла")
+            cols[2].caption("")
+    if shown == 0:
+        st.caption("Для найденных строк пока нет прямых файлов или web-ссылок.")
+
+
+def market_radar_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    radar = record.get("market_radar")
+    if radar is None:
+        return []
+    rows = getattr(radar, "production_rows", []) or []
+    return [
+        {
+            "#": index,
+            "Показатель": getattr(row, "commodity", ""),
+            "Компания / страна": getattr(row, "company_or_country", ""),
+            "Период": getattr(row, "period", ""),
+            "Значение": getattr(row, "value", ""),
+            "Ед.": getattr(row, "unit", ""),
+            "Источник": getattr(row, "source_name", ""),
+            "Уверенность": getattr(row, "confidence", ""),
+        }
+        for index, row in enumerate(rows[:40], start=1)
+    ]
+
+
+def market_source_status_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    radar = record.get("market_radar")
+    if radar is None:
+        return []
+    return [
+        {
+            "Источник": getattr(status, "source_name", ""),
+            "Статус": getattr(status, "status", ""),
+            "Строк загружено": getattr(status, "rows_loaded", ""),
+            "Ссылка": getattr(status, "source_url", ""),
+        }
+        for status in getattr(radar, "source_status", []) or []
+    ]
+
+
+def market_share_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = market_radar_rows(record)
+    numeric_rows: list[dict[str, Any]] = []
+    for row in rows:
+        value = numeric_score(row.get("Значение"))
+        if value <= 0:
+            continue
+        numeric_rows.append({**row, "_value": value})
+    totals: dict[tuple[str, str], float] = {}
+    for row in numeric_rows:
+        key = (str(row.get("Показатель") or ""), str(row.get("Период") or ""))
+        totals[key] = totals.get(key, 0.0) + float(row["_value"])
+    result: list[dict[str, Any]] = []
+    for row in numeric_rows:
+        key = (str(row.get("Показатель") or ""), str(row.get("Период") or ""))
+        total = totals.get(key) or 0.0
+        if total <= 0:
+            continue
+        result.append(
+            {
+                "Компания / страна": row.get("Компания / страна"),
+                "Показатель": row.get("Показатель"),
+                "Период": row.get("Период"),
+                "Доля, %": round(float(row["_value"]) / total * 100.0, 1),
+                "Объем": row.get("Значение"),
+                "Ед.": row.get("Ед."),
+            }
+        )
+    return result
+
+
+def business_source_registry_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "Источник": source.source_name,
+            "Тип": source.source_type,
+            "Что покрывает": ", ".join(source.commodities),
+            "Ссылка": source.source_url,
+        }
+        for source in SOURCE_REGISTRY
+    ]
+
+
+def market_radar_context(record: dict[str, Any], *, max_rows: int = 20) -> str:
+    radar = record.get("market_radar")
+    if radar is None:
+        return ""
+    lines = [getattr(radar, "market_summary", "") or ""]
+    for row in (getattr(radar, "production_rows", []) or [])[:max_rows]:
+        lines.append(
+            "- "
+            + "; ".join(
+                str(value)
+                for value in (
+                    getattr(row, "company_or_country", ""),
+                    getattr(row, "commodity", ""),
+                    getattr(row, "period", ""),
+                    f"{getattr(row, 'value', '')} {getattr(row, 'unit', '')}",
+                    getattr(row, "source_name", ""),
+                    getattr(row, "source_url", ""),
+                    f"confidence={getattr(row, 'confidence', '')}",
+                )
+                if value not in (None, "")
+            )
+        )
+    missing = getattr(radar, "missing_data", []) or []
+    if missing:
+        lines.append("Missing data: " + "; ".join(str(item) for item in missing[:8]))
+    return "\n".join(line for line in lines if line).strip()
+
+
+def user_report_extra_sections(record: dict[str, Any]) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    method_rows = method_comparison_rows(record)
+    if method_rows:
+        headers = list(method_rows[0].keys())
+        sections.append(
+            {
+                "title": "Сравнение решений",
+                "paragraphs": [],
+                "table": {"headers": headers, "rows": [[str(row.get(header, "")) for header in headers] for row in method_rows[:20]]},
+            }
+        )
+    if record.get("request_type") != "Бизнес-аналитика":
+        return sections
+
+    radar = record.get("market_radar")
+    if radar is not None:
+        summary_parts = [getattr(radar, "market_summary", "") or ""]
+        missing = getattr(radar, "missing_data", []) or []
+        if missing:
+            summary_parts.append("Недостающие данные: " + "; ".join(str(item) for item in missing[:8]))
+        suggested = getattr(radar, "suggested_sources", []) or []
+        if suggested:
+            summary_parts.append("Что проверить дальше: " + "; ".join(str(item) for item in suggested[:8]))
+        sections.append(
+            {
+                "title": "Рыночный summary",
+                "paragraphs": [part for part in summary_parts if part],
+            }
+        )
+
+    market_rows = market_radar_rows(record)
+    if market_rows:
+        headers = list(market_rows[0].keys())
+        sections.append(
+            {
+                "title": "Конкретные рыночные цифры",
+                "paragraphs": [],
+                "table": {"headers": headers, "rows": [[str(row.get(header, "")) for header in headers] for row in market_rows[:40]]},
+            }
+        )
+    share_rows = market_share_rows(record)
+    if share_rows:
+        headers = list(share_rows[0].keys())
+        sections.append(
+            {
+                "title": "Доли в найденной выборке",
+                "paragraphs": ["Доли рассчитаны только по найденным и сопоставимым строкам Market Radar."],
+                "table": {"headers": headers, "rows": [[str(row.get(header, "")) for header in headers] for row in share_rows[:40]]},
+            }
+        )
+    status_rows = market_source_status_rows(record)
+    if status_rows:
+        headers = list(status_rows[0].keys())
+        sections.append(
+            {
+                "title": "Релевантные бизнес-источники",
+                "paragraphs": [],
+                "table": {"headers": headers, "rows": [[str(row.get(header, "")) for header in headers] for row in status_rows[:20]]},
+            }
+        )
+    return sections
 
 
 def confidence_label(run: Any | None, orchestration: Any | None) -> tuple[str, float]:
@@ -526,37 +838,52 @@ def render_soft_text(text: str) -> None:
     st.markdown(f'<div class="literature-soft-text">{safe}</div>', unsafe_allow_html=True)
 
 
-def citation_url_map(run: Any | None) -> dict[str, str]:
-    if run is None:
-        return {}
+def citation_url_map(run: Any | None, orchestration: Any | None = None) -> dict[str, str]:
     mapping: dict[str, str] = {}
-    for index, result in enumerate(getattr(run, "results", []) or [], start=1):
-        link = preferred_web_link(result)
-        if link:
-            mapping[f"web:{index}"] = link
-    for index, row in enumerate(getattr(run, "local_matches", []) or [], start=1):
-        found = local_file_for_row(row)
-        if found:
-            mapping[f"local:{index}"] = found.resolve().as_uri()
+    if run is not None:
+        for index, result in enumerate(getattr(run, "results", []) or [], start=1):
+            link = preferred_web_link(result)
+            if link:
+                mapping[f"web:{index}"] = link
+                result_id = getattr(result, "result_id", None)
+                if result_id:
+                    mapping[f"web:{result_id}"] = link
+        for index, row in enumerate(getattr(run, "local_matches", []) or [], start=1):
+            found = local_file_for_row(row)
+            if found:
+                mapping[f"local:{index}"] = found.resolve().as_uri()
+    if orchestration is not None:
+        for section, rows in (getattr(orchestration, "retrieved_context", None).as_dict() if getattr(orchestration, "retrieved_context", None) else {}).items():
+            for index, row in enumerate(rows or [], start=1):
+                citation = str(row.get("id") or f"{section}:{index}")
+                link = row.get("url") or ""
+                if not link:
+                    found = local_file_for_row(row)
+                    link = found.resolve().as_uri() if found else ""
+                if not link and row.get("doi"):
+                    link = f"https://doi.org/{row['doi']}"
+                if link:
+                    mapping[citation.casefold()] = link
+                    mapping[f"{section}:{index}".casefold()] = link
     return mapping
 
 
-def linkify_citations(text: str, run: Any | None) -> str:
-    links = citation_url_map(run)
+def linkify_citations(text: str, run: Any | None, orchestration: Any | None = None) -> str:
+    links = citation_url_map(run, orchestration)
     safe = escape(compact_text(text, 3000))
 
     def replace(match: re.Match[str]) -> str:
-        key = f"{match.group(1).lower()}:{match.group(2)}"
+        key = match.group(1).casefold()
         href = links.get(key)
         label = match.group(0)
         if not href:
             return label
         return f'<a href="{escape(href, quote=True)}" target="_blank">{label}</a>'
 
-    return re.sub(r"\[(web|local):(\d+)\]", replace, safe, flags=re.I)
+    return re.sub(r"\[([A-Za-z_][A-Za-z0-9_:-]+)\]", replace, safe, flags=re.I)
 
 
-def render_report_body(text: str, run: Any | None) -> None:
+def render_report_body(text: str, run: Any | None, orchestration: Any | None = None) -> None:
     blocks = report_text_blocks(text)
     if not blocks:
         st.info("Отчет пока не сгенерирован.")
@@ -567,12 +894,12 @@ def render_report_body(text: str, run: Any | None) -> None:
             render_soft_heading(block_text)
         elif block.get("type") == "bullet":
             st.markdown(
-                f'<div class="literature-soft-text">• {linkify_citations(block_text, run)}</div>',
+                f'<div class="literature-soft-text">• {linkify_citations(block_text, run, orchestration)}</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                f'<div class="literature-soft-text">{linkify_citations(block_text, run)}</div>',
+                f'<div class="literature-soft-text">{linkify_citations(block_text, run, orchestration)}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -812,13 +1139,14 @@ def render_reports(record: dict[str, Any]) -> None:
         render_literature_reports(record)
         return
     if answer is not None:
-        st.markdown("**Answer report**")
+        render_soft_heading("Основной отчет")
         answer_exports = build_answer_exports(
             answer_output_dir(record),
             query=query,
             answer=answer,
             run=run,
             orchestration=orchestration,
+            extra_sections=user_report_extra_sections(record),
         )
         cols = st.columns(2)
         with cols[0]:
@@ -826,7 +1154,7 @@ def render_reports(record: dict[str, Any]) -> None:
         with cols[1]:
             render_download(answer_exports.get("docx"), "DOCX: отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     if run is not None:
-        st.markdown("**Web / literature reports**")
+        render_soft_heading("Web-отчеты")
         cols = st.columns(3)
         with cols[0]:
             render_download(getattr(run, "links_report_pdf_path", None), "PDF: только ссылки", "application/pdf")
@@ -837,22 +1165,17 @@ def render_reports(record: dict[str, Any]) -> None:
         with cols[2]:
             render_download(getattr(run, "report_pdf_path", None), "PDF: полный отчет", "application/pdf")
             render_download(getattr(run, "report_docx_path", None), "DOCX: полный отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        if getattr(run, "output_dir", None):
-            archive = build_run_archive(run, Path(run.output_dir) / "run_artifacts.zip", answer=answer, query=query, project_root=ROOT)
-            render_download(archive, "ZIP: web/literature artifacts", "application/zip")
 
     if orchestration is None:
         return
-    render_soft_heading("Local RAG / orchestration reports")
+    render_soft_heading("Локальный отчет по evidence")
     output_dir = orchestration_output_dir(record)
     full_exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer, query=query)
-    archive = build_orchestration_archive(orchestration, output_dir / "orchestration_artifacts.zip", answer=answer, query=query, project_root=ROOT)
     cols = st.columns(2)
     with cols[0]:
-        render_download(full_exports.get("pdf"), "PDF: local RAG полный", "application/pdf")
+        render_download(full_exports.get("pdf"), "PDF: evidence отчет", "application/pdf")
     with cols[1]:
-        render_download(full_exports.get("docx"), "DOCX: local RAG полный", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    render_download(archive, "ZIP: local RAG artifacts", "application/zip")
+        render_download(full_exports.get("docx"), "DOCX: evidence отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 def render_answer_section_exports(record: dict[str, Any]) -> None:
@@ -865,6 +1188,7 @@ def render_answer_section_exports(record: dict[str, Any]) -> None:
         answer=answer,
         run=record.get("literature_run"),
         orchestration=record.get("orchestration"),
+        extra_sections=user_report_extra_sections(record),
     )
     cols = st.columns(2)
     with cols[0]:
@@ -1018,93 +1342,115 @@ def render_result(record: dict[str, Any]) -> None:
         render_literature_result(record)
         return
     confidence_text, confidence_score = confidence_label(run, orchestration)
+    metrics = answer_metrics(record)
+    comparison_title = "Экономическое сравнение решений" if request_type == "Бизнес-аналитика" else "Сравнение методик и свойств"
 
-    cols = st.columns(4)
+    cols = st.columns(5)
     cols[0].metric("Web sources", len(getattr(run, "results", []) or []))
-    cols[1].metric("Local evidence", len(getattr(run, "local_matches", []) or []) + len(getattr(orchestration, "evidence", []) or []))
-    cols[2].metric("Deep Search summaries", len(getattr(run, "deep_results", []) or []))
+    cols[1].metric("Local evidence", len(getattr(orchestration, "evidence", []) or []))
+    cols[2].metric("Таблицы", len(orchestration_rows(orchestration, "tables")))
     cols[3].metric("Confidence", f"{confidence_text} ({confidence_score:.0%})")
+    cols[4].metric("Отчет модели", metrics["answer_time"])
 
-    tabs = st.tabs(["Отчет", "Источники", "Сравнение", "Evidence", "Графы", "Графики", "Отчеты"])
+    tabs = st.tabs(["Отчет", comparison_title, "Источники", "Графики", "Отчеты"])
     with tabs[0]:
+        render_soft_heading("Отчет")
         if answer is not None:
-            st.markdown(compact_text(getattr(answer, "text", ""), 6000))
+            render_report_body(getattr(answer, "text", ""), run, orchestration)
             render_answer_section_exports(record)
-        elif run is not None:
-            st.write(run_overall_summary(run))
-            insights = comparison_insights(run)
-            if insights:
-                st.write(insights)
         elif orchestration is not None:
-            st.text(orchestration.answer_draft)
+            render_report_body(orchestration.answer_draft, run, orchestration)
+        comparison = record.get("method_comparison")
+        if comparison is not None:
+            render_soft_heading("Краткий вывод по сравнению")
+            render_report_body(comparison.answer_summary, run, orchestration)
 
     with tabs[1]:
-        render_section_exports(run, "sources", "источники")
-        render_orchestration_section_exports(record, "sources", "источники")
-        st.markdown("**Web-search**")
-        render_table(source_rows(run), empty_text="Web-источники не найдены.")
-        st.markdown("**Локальный поиск**")
-        render_table(local_rows_from_literature(run), empty_text="Локальные совпадения не найдены в literature layer.")
-        if run is not None and getattr(run, "resource_links", None):
-            st.markdown("**Дополнительные ссылки**")
-            render_table(run.resource_links)
+        render_soft_heading(comparison_title)
+        render_table(method_comparison_rows(record), empty_text="Методики/экономические варианты не найдены.")
+        if request_type == "Бизнес-аналитика":
+            render_soft_heading("Рыночные и производственные показатели")
+            render_table(market_radar_rows(record), empty_text="Рыночные показатели по запросу не найдены в доступном cache/fixture.")
+            radar = record.get("market_radar")
+            if radar is not None and getattr(radar, "market_summary", ""):
+                render_soft_heading("Краткий вывод Market Radar")
+                render_soft_text(getattr(radar, "market_summary", ""))
+            elif not should_run_market_radar(record.get("query", "")):
+                st.caption(
+                    "Market Radar не запускался: запрос выглядит как технико-экономическое сравнение решений, "
+                    "а не как запрос по рынку, производству, компаниям или странам."
+                )
 
     with tabs[2]:
-        render_section_exports(run, "comparison", "сравнение")
-        render_section_exports(run, "properties", "свойства")
-        render_orchestration_section_exports(record, "comparison", "сравнение")
-        render_orchestration_section_exports(record, "properties", "свойства")
-        st.markdown("**Подтверждается локально и во внешней литературе**")
-        render_table(comparison_rows(run, "confirmed_methods"))
-        st.markdown("**Только локально**")
-        render_table(comparison_rows(run, "local_only_methods"))
-        st.markdown("**Только во внешней литературе**")
-        render_table(comparison_rows(run, "web_only_methods"))
-        st.markdown("**Свойства и численные результаты**")
-        render_table(property_rows(run, orchestration))
+        render_soft_heading("Web-search")
+        render_table(source_rows(run), empty_text="Web-источники не найдены.")
+        render_web_source_links(run)
+        render_soft_heading("Локальный RAG, таблицы и граф")
+        render_table(orchestration_source_rows(orchestration), empty_text="Локальные источники не найдены.")
+        render_orchestration_source_links(orchestration)
+        if request_type == "Бизнес-аналитика":
+            render_soft_heading("Бизнес-источники")
+            render_table(market_source_status_rows(record), empty_text="Market Radar не выбрал бизнес-источники.")
+            if record.get("market_radar") is None:
+                st.caption("Для текущего запроса используются локальные RAG/Excel/graph evidence; рыночный радар не применим.")
+            with st.expander("Доступный registry бизнес-источников", expanded=False):
+                render_table(business_source_registry_rows())
 
     with tabs[3]:
-        render_section_exports(run, "evidence", "evidence")
-        render_orchestration_section_exports(record, "evidence", "evidence")
-        if orchestration is None:
-            st.info("Local RAG evidence появится для режимов методик/свойств или при генерации отчета.")
+        render_soft_heading("Скорость и стоимость модели")
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Отчет", metrics["answer_time"])
+        metric_cols[1].metric("Токены отчета", metrics["tokens"])
+        metric_cols[2].metric("Стоимость запроса", metrics["cost"])
+        metric_cols[3].metric("Модель", metrics["model"])
+        chart_height = 280
+        coverage = pd.DataFrame(
+            [
+                {"Тип": "Raw RAG", "Количество": len(orchestration_rows(orchestration, "raw"))},
+                {"Тип": "Summary", "Количество": len(orchestration_rows(orchestration, "summaries"))},
+                {"Тип": "Excel/Table", "Количество": len(orchestration_rows(orchestration, "tables"))},
+                {"Тип": "Graph", "Количество": len(orchestration_rows(orchestration, "graph"))},
+                {"Тип": "Web", "Количество": len(getattr(run, "results", []) or [])},
+            ]
+        )
+        render_soft_heading("Покрытие источников")
+        st.bar_chart(coverage.set_index("Тип"), use_container_width=True, height=chart_height)
+        if run is not None:
+            sources = table_df(source_counts(run))
+            if not sources.empty:
+                render_soft_heading("Web-источники по базам данных")
+                sources = sources.rename(columns={"source": "База", "count": "Количество"})
+                sources["База"] = sources["База"].map(lambda value: SEARCH_SOURCE_LABELS.get(value, value))
+                st.bar_chart(sources.set_index("База"), use_container_width=True, height=chart_height)
         else:
-            st.markdown("**Raw RAG**")
-            render_table(orchestration_rows(orchestration, "raw"))
-            st.markdown("**Summary RAG**")
-            render_table(orchestration_rows(orchestration, "summaries"))
-            st.markdown("**Tables**")
-            render_table(orchestration_rows(orchestration, "tables"))
-            if orchestration.fallbacks:
-                st.markdown("**Fallbacks**")
-                render_table(orchestration.fallbacks)
+            st.info("Web-поиск не запускался.")
+        if request_type == "Бизнес-аналитика":
+            market_rows = table_df(market_radar_rows(record))
+            if not market_rows.empty:
+                render_soft_heading("Производственные / рыночные показатели")
+                chart_rows = market_rows[["Компания / страна", "Показатель", "Значение"]].copy()
+                chart_rows["Значение"] = pd.to_numeric(chart_rows["Значение"], errors="coerce")
+                chart_rows = chart_rows.dropna(subset=["Значение"])
+                if not chart_rows.empty:
+                    chart_rows["Серия"] = chart_rows["Компания / страна"] + " / " + chart_rows["Показатель"]
+                    st.bar_chart(chart_rows.set_index("Серия")[["Значение"]], use_container_width=True, height=chart_height)
+            share_rows = table_df(market_share_rows(record))
+            if not share_rows.empty:
+                render_soft_heading("Доли компаний / стран в найденной выборке")
+                share_chart = share_rows.copy()
+                share_chart["Серия"] = (
+                    share_chart["Компания / страна"].astype(str)
+                    + " / "
+                    + share_chart["Показатель"].astype(str)
+                    + " / "
+                    + share_chart["Период"].astype(str)
+                )
+                st.bar_chart(share_chart.set_index("Серия")[["Доля, %"]], use_container_width=True, height=chart_height)
+                render_table(market_share_rows(record))
+            elif record.get("market_radar") is None:
+                st.caption("Рыночные графики не строились: запрос не содержит явного рыночного среза.")
 
     with tabs[4]:
-        render_section_exports(run, "graphs", "графы")
-        render_orchestration_section_exports(record, "graphs", "графы")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**Knowledge graph**")
-            st.graphviz_chart(knowledge_graph_dot(run, orchestration), use_container_width=True)
-        with col_b:
-            st.markdown(comparison_graph_title(request_type))
-            st.graphviz_chart(comparison_graph_dot(run, orchestration, request_type), use_container_width=True)
-
-    with tabs[5]:
-        render_section_exports(run, "charts", "графики")
-        render_orchestration_section_exports(record, "charts", "графики")
-        years = table_df(year_counts(run)) if run is not None else pd.DataFrame()
-        sources = table_df(source_counts(run)) if run is not None else pd.DataFrame()
-        if not years.empty:
-            st.bar_chart(years.set_index("year"))
-        else:
-            st.info("Нет данных по годам публикаций.")
-        if not sources.empty:
-            st.bar_chart(sources.set_index("source"))
-        else:
-            st.info("Нет данных по базам данных.")
-
-    with tabs[6]:
         render_reports(record)
 
 
@@ -1114,6 +1460,8 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
     orchestration = None
     answer = None
     comparison_answer = None
+    method_comparison = None
+    market_radar = None
     llm_client = build_router_completion_client_from_env(ROOT) if options["use_llm_rewrite"] or options["deep_search"] else None
 
     if request_type == "Литературный поиск":
@@ -1156,12 +1504,31 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
             use_query_rewrite=True,
             use_llm_query_rewrite=options["use_llm_rewrite"],
             rewrite_client=llm_client if options["use_llm_rewrite"] else None,
+            local_top_k=options["local_top_k"],
         )
         literature_run = orchestration.web_run
+        method_comparison = build_method_comparison_from_orchestration(
+            query,
+            orchestration,
+            top_k=min(max(options["local_top_k"], 4), 12),
+        )
+        if request_type == "Бизнес-аналитика" and should_run_market_radar(query):
+            market_radar = run_market_radar(query)
         if options["generate_answer"]:
             started_at = time.perf_counter()
-            answer = answer_with_provider_router(query, orchestration, project_root=ROOT, max_tokens=options["answer_tokens"])
+            answer_mode = "business" if request_type == "Бизнес-аналитика" else "methods"
+            extra_context = market_radar_context({"market_radar": market_radar}) if market_radar is not None else None
+            answer = answer_with_provider_router(
+                query,
+                orchestration,
+                project_root=ROOT,
+                max_tokens=options["answer_tokens"],
+                answer_mode=answer_mode,
+                extra_context=extra_context,
+            )
             add_elapsed_usage(answer, time.perf_counter() - started_at)
+    if request_type == "Литературный поиск":
+        method_comparison = None
 
     return {
         "query": query,
@@ -1171,6 +1538,8 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
         "orchestration": orchestration,
         "answer": answer,
         "comparison_answer": comparison_answer,
+        "method_comparison": method_comparison,
+        "market_radar": market_radar,
     }
 
 

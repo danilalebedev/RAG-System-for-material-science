@@ -72,7 +72,7 @@ def test_markdown_report_contains_capability_rows() -> None:
                 "title": "GUI with one query and three user task modes",
                 "status": "pass",
                 "user_value": "Литературный поиск, методики, свойства.",
-                "evidence": {"request_types": ["Литературный поиск", "Поиск методик", "Поиск свойств"]},
+                "evidence": {"request_types": ["Литературный поиск", "Анализ методик и свойств", "Бизнес-аналитика"]},
             }
         ],
     }

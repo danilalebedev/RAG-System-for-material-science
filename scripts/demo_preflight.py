@@ -30,7 +30,7 @@ REQUIRED_STREAMS = (
     "procedure_summary_vector",
 )
 DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
-EXPECTED_DEMO_REQUEST_TYPES = ("Литературный поиск", "Поиск методик", "Поиск свойств")
+EXPECTED_DEMO_REQUEST_TYPES = ("Литературный поиск", "Анализ методик и свойств", "Бизнес-аналитика")
 BANNED_DEMO_UI_LABELS = ("Demo scenario", "Query Decomposer", "Advanced API metadata sources")
 
 
@@ -167,7 +167,7 @@ def demo_ui_contract_issues(root: Path, demo_app_module: Any) -> list[str]:
     )
     workflow_rows = workflow_summary_rows(
         {
-            "request_type": "Поиск методик",
+            "request_type": "Анализ методик и свойств",
             "literature_run": probe_run,
             "orchestration": probe_orchestration,
             "answer": None,
