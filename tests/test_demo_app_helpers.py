@@ -8,6 +8,7 @@ from app.ui.demo_app import (
     local_rows_from_literature,
     market_radar_rows,
     method_comparison_rows,
+    run_query_orchestration_compat,
     search_context_rows,
     should_run_market_radar,
     source_rows,
@@ -168,6 +169,51 @@ def test_market_radar_runs_only_for_market_like_queries() -> None:
     assert not should_run_market_radar(
         "Технико-экономическое сравнение вариантов подготовки воды для обогатительной фабрики"
     )
+
+
+def test_run_query_orchestration_compat_handles_stale_signature(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def old_run_query_orchestration(
+        query: str,
+        *,
+        project_root: object,
+        include_web: bool,
+        web_sources: list[object],
+        web_top_k: int,
+        web_deep_search: bool,
+        web_deep_search_limit: int,
+        generate_pdf_report: bool,
+        required_routes: list[str],
+        retrieval_profile: str,
+        use_query_rewrite: bool,
+        use_llm_query_rewrite: bool,
+        rewrite_client: object,
+    ) -> str:
+        captured.update(locals())
+        return "ok"
+
+    monkeypatch.setattr("app.ui.demo_app.run_query_orchestration", old_run_query_orchestration)
+
+    result = run_query_orchestration_compat(
+        "query",
+        project_root=object(),
+        include_web=False,
+        web_sources=[],
+        web_top_k=5,
+        web_deep_search=False,
+        web_deep_search_limit=5,
+        generate_pdf_report=False,
+        required_routes=["summary_rag"],
+        retrieval_profile="routerai_bge_m3",
+        use_query_rewrite=True,
+        use_llm_query_rewrite=False,
+        rewrite_client=None,
+        local_top_k=20,
+    )
+
+    assert result == "ok"
+    assert "local_top_k" not in captured
 
 
 def test_publication_tables_are_compact_user_facing() -> None:

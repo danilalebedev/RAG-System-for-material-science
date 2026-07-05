@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import re
 import sys
 import time
@@ -100,6 +101,20 @@ def should_run_market_radar(query: str) -> bool:
         return True
     folded = query.casefold()
     return any(term in folded for term in MARKET_RADAR_TERMS)
+
+
+def run_query_orchestration_compat(query: str, *, local_top_k: int | None = None, **kwargs: Any) -> Any:
+    call_kwargs = dict(kwargs)
+    try:
+        signature = inspect.signature(run_query_orchestration)
+        supports_local_top_k = "local_top_k" in signature.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+        )
+    except (TypeError, ValueError):
+        supports_local_top_k = True
+    if supports_local_top_k:
+        call_kwargs["local_top_k"] = local_top_k
+    return run_query_orchestration(query, **call_kwargs)
 
 
 def display_value(value: Any, *, max_chars: int = 900) -> Any:
@@ -1490,7 +1505,7 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
             add_elapsed_usage(answer, time.perf_counter() - started_at)
         literature_run, comparison_answer = generate_literature_comparison(query, literature_run, options)
     else:
-        orchestration = run_query_orchestration(
+        orchestration = run_query_orchestration_compat(
             query,
             project_root=ROOT,
             include_web=options["web_search"],
