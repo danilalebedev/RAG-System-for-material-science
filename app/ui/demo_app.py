@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import inspect
 import re
@@ -96,6 +97,29 @@ MARKET_RADAR_TERMS = (
 )
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 METALMIND_EMBLEM_PATH = ASSETS_DIR / "metalmind_emblem_256.png"
+FALLBACK_LOGO_SVG = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="MetalMind robot">
+  <defs>
+    <linearGradient id="bg" x1="12" y1="12" x2="116" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#151923"/>
+      <stop offset="1" stop-color="#28364d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="32" y1="24" x2="96" y2="104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55d8ff"/>
+      <stop offset="1" stop-color="#ff4f5f"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="58" fill="url(#bg)" stroke="url(#accent)" stroke-width="6"/>
+  <rect x="31" y="47" width="66" height="43" rx="14" fill="#f5f7fb" stroke="#20293a" stroke-width="5"/>
+  <circle cx="50" cy="68" r="9" fill="#0f1724"/>
+  <circle cx="78" cy="68" r="9" fill="#0f1724"/>
+  <circle cx="52" cy="66" r="3" fill="#55d8ff"/>
+  <circle cx="80" cy="66" r="3" fill="#55d8ff"/>
+  <path d="M49 82h30" stroke="#20293a" stroke-width="5" stroke-linecap="round"/>
+  <path d="M64 47V31" stroke="#f5f7fb" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="64" cy="27" r="6" fill="#ffb21f"/>
+</svg>
+"""
 
 
 def should_run_market_radar(query: str) -> bool:
@@ -104,6 +128,23 @@ def should_run_market_radar(query: str) -> bool:
         return True
     folded = query.casefold()
     return any(term in folded for term in MARKET_RADAR_TERMS)
+
+
+@lru_cache(maxsize=1)
+def metalmind_logo_src() -> str:
+    if METALMIND_EMBLEM_PATH.exists():
+        encoded = base64.b64encode(METALMIND_EMBLEM_PATH.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    encoded = base64.b64encode(FALLBACK_LOGO_SVG.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def metalmind_logo_html() -> str:
+    return (
+        '<div class="metalmind-logo-wrap">'
+        f'<img class="metalmind-logo-img" src="{metalmind_logo_src()}" alt="MetalMind robot" />'
+        "</div>"
+    )
 
 
 def run_query_orchestration_compat(query: str, *, local_top_k: int | None = None, **kwargs: Any) -> Any:
@@ -2029,8 +2070,7 @@ def render_sidebar() -> dict[str, Any]:
 def render_app_header() -> None:
     logo_col, text_col = st.columns([0.13, 0.87], vertical_alignment="center")
     with logo_col:
-        if METALMIND_EMBLEM_PATH.exists():
-            st.image(str(METALMIND_EMBLEM_PATH), width=88)
+        st.markdown(metalmind_logo_html(), unsafe_allow_html=True)
     with text_col:
         st.markdown(
             """
@@ -2072,21 +2112,39 @@ def render_request_type_selector() -> str:
 
 
 def main() -> None:
-    page_icon = str(METALMIND_EMBLEM_PATH) if METALMIND_EMBLEM_PATH.exists() else "⚙️"
-    st.set_page_config(page_title="MetalMind", page_icon=page_icon, layout="wide")
+    st.set_page_config(page_title="MetalMind", page_icon="🤖", layout="wide")
     st.markdown(
         """
         <style>
+        .metalmind-logo-wrap {
+            width: 92px;
+            height: 92px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 18px;
+            background: var(--secondary-background-color);
+            border: 1px solid rgba(128, 144, 168, 0.28);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+        }
+        .metalmind-logo-img {
+            width: 88px;
+            height: 88px;
+            object-fit: contain;
+            display: block;
+            filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.25));
+        }
         .metalmind-title {
             font-size: 2.45rem;
             font-weight: 760;
             letter-spacing: 0;
-            color: #f3f7ff;
+            color: var(--text-color);
             line-height: 1.05;
         }
         .metalmind-subtitle {
             font-size: 1.02rem;
-            color: #c8d4e4;
+            color: var(--text-color);
+            opacity: 0.82;
             margin-top: 0.25rem;
         }
         .request-type-panel {
@@ -2094,17 +2152,17 @@ def main() -> None:
             padding: 0.82rem 1rem 0.72rem 1rem;
             border: 1px solid rgba(93, 126, 166, 0.5);
             border-radius: 14px;
-            background: linear-gradient(135deg, rgba(24, 38, 61, 0.92), rgba(35, 47, 70, 0.78));
+            background: var(--secondary-background-color);
         }
         .request-type-eyebrow {
-            color: #50c7ff;
+            color: var(--primary-color);
             text-transform: uppercase;
             font-size: 0.74rem;
             font-weight: 760;
             letter-spacing: 0.08em;
         }
         .request-type-heading {
-            color: #f3f7ff;
+            color: var(--text-color);
             font-size: 1.18rem;
             font-weight: 680;
             margin-top: 0.15rem;
@@ -2121,14 +2179,16 @@ def main() -> None:
         .literature-section-title {
             font-size: 0.98rem;
             font-weight: 400;
-            color: #cbd3df;
+            color: var(--text-color);
+            opacity: 0.92;
             margin: 0.85rem 0 0.35rem 0;
         }
         .literature-soft-text {
             font-size: 0.95rem;
             font-weight: 400;
             line-height: 1.55;
-            color: #c8d0dc;
+            color: var(--text-color);
+            opacity: 0.86;
             margin-bottom: 0.85rem;
         }
         </style>

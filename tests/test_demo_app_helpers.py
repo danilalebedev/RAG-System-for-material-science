@@ -11,6 +11,8 @@ from app.ui.demo_app import (
     local_rows_from_literature,
     linkify_citations,
     market_radar_rows,
+    metalmind_logo_html,
+    metalmind_logo_src,
     method_comparison_rows,
     run_query_orchestration_compat,
     search_context_rows,
@@ -19,6 +21,16 @@ from app.ui.demo_app import (
     workflow_summary_rows,
 )
 from app.query.reports import answer_report_sections
+
+
+def test_metalmind_logo_is_embedded_for_remote_browsers() -> None:
+    src = metalmind_logo_src()
+    html = metalmind_logo_html()
+
+    assert src.startswith("data:image/")
+    assert "file://" not in src
+    assert 'src="data:image/' in html
+    assert "MetalMind robot" in html
 
 
 def test_search_context_rows_are_user_facing() -> None:
