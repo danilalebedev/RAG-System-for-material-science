@@ -51,6 +51,7 @@ from app.query.reports import (  # noqa: E402
     routerai_budget_summary,
     safe_report_id,
     source_counts,
+    unique_local_matches,
     year_counts,
 )
 from app.web_search.deep_search import build_router_completion_client_from_env  # noqa: E402
@@ -356,7 +357,7 @@ def source_rows(run: Any) -> list[dict[str, Any]]:
 
 def local_rows_from_literature(run: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    local_matches = list(getattr(run, "local_matches", []) or [])
+    local_matches = unique_local_matches(run)
     max_score = max([numeric_score(row.get("score")) for row in local_matches] or [1.0])
     for index, row in enumerate(local_matches, start=1):
         rows.append(
@@ -1412,7 +1413,7 @@ def render_web_source_links(run: Any | None) -> None:
 def render_local_source_links(run: Any | None) -> None:
     if run is None:
         return
-    rows = list(getattr(run, "local_matches", []) or [])
+    rows = unique_local_matches(run)
     if not rows:
         return
     render_soft_heading("Локальные источники")
@@ -1441,7 +1442,7 @@ def render_local_source_links(run: Any | None) -> None:
 
 
 def local_summary_text(run: Any | None) -> str:
-    rows = list(getattr(run, "local_matches", []) or []) if run is not None else []
+    rows = unique_local_matches(run) if run is not None else []
     if not rows:
         return "Локальные источники по запросу не найдены."
     titles = []

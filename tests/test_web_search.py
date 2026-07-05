@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 import requests
+from docx import Document
 
 from app.llm.types import LLMResponse
 from app.query.literature import answer_literature_with_provider_router, format_literature_context
@@ -34,6 +35,7 @@ from app.query.cockpit import (
     query_decomposition,
 )
 from app.query.reports import (
+    answer_report_sections,
     build_answer_exports,
     build_deep_report,
     build_docx_report,
@@ -980,6 +982,13 @@ def test_docx_and_split_reports_are_generated(tmp_path: Path) -> None:
     output = build_docx_report(run, tmp_path / "report.docx", mode="full")
     assert output.exists()
     assert output.stat().st_size > 1000
+    with zipfile.ZipFile(output) as zf:
+        rels_xml = zf.read("word/_rels/document.xml.rels").decode("utf-8")
+    assert "https://example.org/paper" in rels_xml
+    full_document = Document(output)
+    full_paragraphs = [(paragraph.text, paragraph.style.name) for paragraph in full_document.paragraphs if paragraph.text.strip()]
+    assert ("Полный отчет по поиску литературы", "Heading 1") in full_paragraphs
+    assert ("Релевантные ссылки", "Heading 2") in full_paragraphs
     brief_docx = build_docx_report(run, tmp_path / "executive_brief.docx", mode="brief")
     assert brief_docx.exists()
     assert brief_docx.stat().st_size > 1000
@@ -1095,6 +1104,52 @@ def test_section_exports_and_archive_include_local_files(tmp_path: Path) -> None
     assert "sources.csv" in local_names
     assert "01_Nickel alloy annealing hardness.url" in web_names
     assert "URL=https://example.org/paper" in web_shortcut
+
+
+def test_answer_report_dedupes_local_sources_and_writes_docx_hyperlinks(tmp_path: Path) -> None:
+    result = LiteratureSearchResult(
+        result_id="web_link",
+        source="crossref",
+        title="Web paper",
+        url="https://example.org/web-paper",
+    )
+    run = LiteratureSearchRun(
+        request=LiteratureSearchRequest(query="mine water treatment"),
+        keywords=["mine water", "treatment"],
+        results=[result],
+        local_matches=[
+            {"doc_id": "doc-1", "title": "Методы очистки шахтных вод", "url": "https://example.org/local-paper"},
+            {"doc_id": "doc-1", "title": "Методы очистки шахтных вод", "url": "https://example.org/local-paper"},
+            {"doc_id": "doc-1", "title": "Методы очистки шахтных вод", "url": "https://example.org/local-paper"},
+        ],
+    )
+    answer = LLMResponse(
+        text="## Краткий вывод\nПервый абзац.\n\n## Детали\nВторой абзац.",
+        provider="routerai",
+        model="test",
+        status="primary",
+    )
+
+    sections = answer_report_sections(query="mine water treatment", answer=answer, run=run)
+    local_section = next(section for section in sections if section["title"] == "Ключевые локальные источники")
+
+    assert local_section["table"]["headers"] == ["#", "Источник", "Открыть"]
+    assert len(local_section["table"]["rows"]) == 1
+    assert local_section["table"]["rows"][0][2]["url"] == "https://example.org/local-paper"
+
+    exports = build_answer_exports(tmp_path / "answer_report", query="mine water treatment", answer=answer, run=run)
+    docx_path = exports["docx"]
+    with zipfile.ZipFile(docx_path) as zf:
+        rels_xml = zf.read("word/_rels/document.xml.rels").decode("utf-8")
+    assert "https://example.org/web-paper" in rels_xml
+    assert "https://example.org/local-paper" in rels_xml
+
+    document = Document(docx_path)
+    paragraphs = [(paragraph.text, paragraph.style.name) for paragraph in document.paragraphs if paragraph.text.strip()]
+    assert ("Отчет по литературному поиску", "Heading 1") in paragraphs
+    assert any(text == "Краткий вывод" and style.startswith("Heading") for text, style in paragraphs)
+    assert any(text == "Первый абзац." and style == "Normal" for text, style in paragraphs)
+    assert not any(text.startswith("##") for text, _ in paragraphs)
 
 
 def test_comparison_insights_can_be_disabled() -> None:

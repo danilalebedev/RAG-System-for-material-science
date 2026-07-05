@@ -247,10 +247,17 @@ def test_publication_tables_are_compact_user_facing() -> None:
         ],
         local_matches=[
             {
+                "doc_id": "local-doc-1",
                 "title": "Локальный обзор очистки шахтных вод",
                 "score": 0.72,
                 "preview": "Фрагмент по сорбции и нейтрализации.",
-            }
+            },
+            {
+                "doc_id": "local-doc-1",
+                "title": "Локальный обзор очистки шахтных вод",
+                "score": 0.68,
+                "preview": "Дублирующий фрагмент той же статьи.",
+            },
         ],
     )
 
@@ -261,6 +268,7 @@ def test_publication_tables_are_compact_user_facing() -> None:
     assert list(local_rows[0]) == ["#", "Релевантность /10", "Заголовок", "Фрагмент"]
     assert web_rows[0]["Релевантность /10"] == 10.0
     assert local_rows[0]["Релевантность /10"] == 10.0
+    assert len(local_rows) == 1
 
 
 def test_display_source_title_prefers_file_name_over_hash() -> None:

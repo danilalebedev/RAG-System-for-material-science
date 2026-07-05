@@ -14,6 +14,9 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import Pt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -133,6 +136,77 @@ def source_title(row: dict[str, Any]) -> str:
 def source_link(result: Any) -> str:
     link = result_link(result)
     return link or compact_text(getattr(result, "doi", "") or getattr(result, "result_id", ""))
+
+
+def is_report_link(value: Any) -> bool:
+    return str(value or "").strip().lower().startswith(("http://", "https://", "file://"))
+
+
+def table_link(text: str, url: str | None) -> dict[str, str]:
+    return {"text": compact_text(text, 400), "url": compact_text(url or "", 1200)}
+
+
+def table_cell_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return compact_text(value.get("text") or value.get("label") or value.get("url") or "", 1200)
+    return compact_text(value, 1200)
+
+
+def table_cell_url(value: Any) -> str:
+    if isinstance(value, dict):
+        url = compact_text(value.get("url") or value.get("href") or "", 1200)
+        return url if is_report_link(url) else ""
+    text = compact_text(value, 1200)
+    return text if is_report_link(text) else ""
+
+
+def markdown_cell(value: Any) -> str:
+    text = table_cell_text(value)
+    url = table_cell_url(value)
+    if url.startswith(("http://", "https://")):
+        return f"[{text or 'Открыть'}]({url})"
+    return text
+
+
+def local_source_link(row: dict[str, Any]) -> str:
+    url = compact_text(row.get("url") or row.get("link") or "", 1200)
+    if is_report_link(url):
+        return url
+    doi = compact_text(row.get("doi"), 300)
+    if doi:
+        return doi if doi.startswith(("http://", "https://")) else f"https://doi.org/{doi.removeprefix('https://doi.org/')}"
+    for value in local_candidate_values(row):
+        found = find_local_file(value, project_root=PROJECT_ROOT)
+        if found:
+            return found.resolve().as_uri()
+    return ""
+
+
+def local_source_key(row: dict[str, Any]) -> str:
+    for key in ("doc_id", "publication_id", "doi"):
+        value = compact_text(row.get(key), 300)
+        if value and not _is_hash_like(value):
+            return f"{key}:{value.casefold()}"
+    link = local_source_link(row)
+    if link:
+        return f"link:{link.casefold()}"
+    for key in ("source_path", "local_path", "path", "file_name"):
+        value = compact_text(row.get(key), 500)
+        if value:
+            return f"{key}:{Path(value).name.casefold()}"
+    return f"title:{source_title(row).casefold()}"
+
+
+def unique_local_matches(run: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in getattr(run, "local_matches", []) or []:
+        key = local_source_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return rows
 
 
 def preferred_web_link(result: Any) -> str:
@@ -494,6 +568,14 @@ def link_paragraph(label: str, url: str | None, style: ParagraphStyle) -> Paragr
     return Paragraph(safe_label, style)
 
 
+def pdf_table_cell(value: Any, style: ParagraphStyle) -> Paragraph:
+    text = table_cell_text(value) or " "
+    url = table_cell_url(value)
+    if url:
+        return Paragraph(f'<link href="{escape(url)}">{escape(text)}</link>', style)
+    return paragraph(text, style)
+
+
 def add_sources_table(story: list[Any], run: Any, styles: dict[str, ParagraphStyle]) -> None:
     story.append(paragraph("Релевантные источники", styles["HeadingUnicode"]))
     table_rows = [["#", "Заголовок", "Ссылка"]]
@@ -545,7 +627,7 @@ def add_pdf_table(story: list[Any], headers: list[str], rows: list[list[Any]], s
         return
     table_rows: list[list[Any]] = [[paragraph(header, styles["SmallUnicode"]) for header in headers]]
     for row in rows:
-        table_rows.append([paragraph(value, styles["SmallUnicode"]) for value in row[: len(headers)]])
+        table_rows.append([pdf_table_cell(value, styles["SmallUnicode"]) for value in row[: len(headers)]])
     if len(headers) == 5:
         col_widths = [0.7 * cm, 6.9 * cm, 1.3 * cm, 2.0 * cm, 5.2 * cm]
     elif len(headers) == 3:
@@ -612,7 +694,30 @@ def set_docx_style(document: Document) -> None:
     style.font.size = Pt(10)
 
 
-def add_docx_table(document: Document, headers: list[str], rows: list[list[str]]) -> None:
+def add_docx_hyperlink(paragraph: Any, text: str, url: str) -> None:
+    part = paragraph.part
+    relation_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relation_id)
+
+    run = OxmlElement("w:r")
+    run_properties = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    run_properties.append(color)
+    run_properties.append(underline)
+    run.append(run_properties)
+
+    text_node = OxmlElement("w:t")
+    text_node.text = compact_text(text, 1200)
+    run.append(text_node)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def add_docx_table(document: Document, headers: list[str], rows: list[list[Any]]) -> None:
     table = document.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
     for index, header in enumerate(headers):
@@ -620,7 +725,15 @@ def add_docx_table(document: Document, headers: list[str], rows: list[list[str]]
     for row in rows:
         cells = table.add_row().cells
         for index, value in enumerate(row):
-            cells[index].text = compact_text(value, 1200)
+            if index >= len(cells):
+                continue
+            text = table_cell_text(value)
+            url = table_cell_url(value)
+            if url:
+                paragraph = cells[index].paragraphs[0]
+                add_docx_hyperlink(paragraph, text or "Открыть", url)
+            else:
+                cells[index].text = text
 
 
 def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Path:
@@ -648,15 +761,22 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
         document.add_heading("Релевантные ссылки", level=2)
         add_docx_table(
             document,
-            ["#", "Заголовок", "Ссылка"],
-            [[str(index), result.title, source_link(result)] for index, result in enumerate(getattr(run, "results", []) or [], start=1)],
+            ["#", "Заголовок", "Открыть"],
+            [
+                [str(index), result.title, table_link("Открыть", source_link(result))]
+                for index, result in enumerate(getattr(run, "results", []) or [], start=1)
+            ],
         )
     if mode == "full":
         document.add_heading("Локальный поиск", level=2)
+        local_rows = unique_local_matches(run)
         add_docx_table(
             document,
-            ["#", "Источник"],
-            [[str(index), source_title(row)] for index, row in enumerate((getattr(run, "local_matches", []) or [])[:50], start=1)],
+            ["#", "Источник", "Открыть"],
+            [
+                [str(index), source_title(row), table_link("Открыть", local_source_link(row))]
+                for index, row in enumerate(local_rows[:50], start=1)
+            ],
         )
         document.add_heading("Публикации по годам", level=2)
         add_docx_table(document, ["Год", "Количество"], [[str(row["year"]), str(row["count"])] for row in year_counts(run)])
@@ -667,7 +787,12 @@ def build_docx_report(run: Any, output_path: Path, *, mode: str = "full") -> Pat
         for index, item in enumerate(run.deep_results, start=1):
             summary = item.document_summary or {}
             document.add_heading(f"{index}. {compact_text(item.source_result.title, 180)}", level=3)
-            document.add_paragraph(f"Ссылка: {compact_text(source_link(item.source_result) or 'n/a')}")
+            link = source_link(item.source_result)
+            paragraph_ref = document.add_paragraph("Ссылка: ")
+            if link:
+                add_docx_hyperlink(paragraph_ref, "Открыть", link)
+            else:
+                paragraph_ref.add_run("n/a")
             document.add_paragraph(compact_text(summary.get("summary") or summary.get("main_topic") or "Summary не извлечен.", 2200))
 
     document.save(output_path)
@@ -1153,12 +1278,12 @@ def answer_report_sections(
             "title": "Ключевые web-источники",
             "paragraphs": [] if links else ["Web-источники не найдены."],
             "table": {
-                "headers": ["#", "Заголовок", "Ссылка"],
+                "headers": ["#", "Заголовок", "Открыть"],
                 "rows": [
                     [
                         str(row["index"]),
                         row["title"],
-                        row.get("link") or "",
+                        table_link("Открыть", row.get("link") or ""),
                     ]
                     for row in links[:20]
                 ],
@@ -1169,17 +1294,18 @@ def answer_report_sections(
     )
 
     if run is not None:
-        local_rows = getattr(run, "local_matches", []) or []
+        local_rows = unique_local_matches(run)
         sections.append(
             {
                 "title": "Ключевые локальные источники",
                 "paragraphs": [] if local_rows else ["Локальные источники по запросу не найдены."],
                 "table": {
-                    "headers": ["#", "Источник"],
+                    "headers": ["#", "Источник", "Открыть"],
                     "rows": [
                         [
                             str(index),
                             source_title(row),
+                            table_link("Открыть", local_source_link(row)),
                         ]
                         for index, row in enumerate(local_rows[:20], start=1)
                     ],
@@ -1235,7 +1361,7 @@ def build_answer_report_markdown(
             lines.append(" | ".join(headers))
             lines.append(" | ".join("---" for _ in headers))
             for row in table["rows"]:
-                lines.append(" | ".join(compact_text(value, 700) for value in row))
+                lines.append(" | ".join(markdown_cell(value) for value in row))
             lines.append("")
     return "\n".join(lines).strip() + "\n"
 
@@ -1258,7 +1384,7 @@ def append_report_sections_markdown(lines: list[str], sections: list[dict[str, A
             lines.append(" | ".join(headers))
             lines.append(" | ".join("---" for _ in headers))
             for row in table["rows"]:
-                lines.append(" | ".join(compact_text(value, 700) for value in row))
+                lines.append(" | ".join(markdown_cell(value) for value in row))
             lines.append("")
 
 
