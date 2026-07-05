@@ -5,10 +5,12 @@ import inspect
 import re
 import sys
 import time
+import zipfile
 from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 import pandas as pd
 import streamlit as st
@@ -48,7 +50,6 @@ from app.query.reports import (  # noqa: E402
     routerai_budget_summary,
     safe_report_id,
     source_counts,
-    source_title,
     year_counts,
 )
 from app.web_search.deep_search import build_router_completion_client_from_env  # noqa: E402
@@ -61,6 +62,11 @@ REQUEST_TYPES = {
     "Литературный поиск": ["summary_rag", "raw_rag"],
     "Анализ методик и свойств": ["summary_rag", "raw_rag", "table_search", "graph_search"],
     "Бизнес-аналитика": ["summary_rag", "raw_rag", "table_search", "graph_search"],
+}
+REQUEST_TYPE_DESCRIPTIONS = {
+    "Литературный поиск": "локальная база + внешние научные источники, ранжирование /10, ссылки и отчет",
+    "Анализ методик и свойств": "Raw RAG, Summary RAG, Excel Query и Knowledge Graph для сравнения методик",
+    "Бизнес-аналитика": "R&D evidence + production radar, импортозамещение, рынок и риски",
 }
 ROUTE_LABELS = {
     "raw_rag": "Raw RAG",
@@ -93,6 +99,8 @@ MARKET_RADAR_TERMS = (
     "export",
     "import",
 )
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+METALMIND_EMBLEM_PATH = ASSETS_DIR / "metalmind_emblem_256.png"
 
 
 def should_run_market_radar(query: str) -> bool:
@@ -142,6 +150,30 @@ def render_table(rows: list[dict[str, Any]], *, empty_text: str = "Нет дан
     st.dataframe(table_df(rows), use_container_width=True, hide_index=True)
 
 
+def render_horizontal_bar_chart(
+    rows: list[dict[str, Any]] | pd.DataFrame,
+    *,
+    label_col: str,
+    value_col: str,
+    empty_text: str,
+    height: int = 320,
+    max_rows: int = 20,
+) -> None:
+    df = table_df(rows) if isinstance(rows, list) else rows.copy()
+    if df.empty or label_col not in df or value_col not in df:
+        st.info(empty_text)
+        return
+    df = df[[label_col, value_col]].copy()
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df = df.dropna(subset=[value_col])
+    if df.empty:
+        st.info(empty_text)
+        return
+    df[label_col] = df[label_col].map(lambda value: compact_text(value, 52))
+    df = df.groupby(label_col, as_index=False)[value_col].sum().sort_values(value_col, ascending=False).head(max_rows)
+    st.bar_chart(df, x=value_col, y=label_col, horizontal=True, use_container_width=True, height=height)
+
+
 def numeric_score(value: Any) -> float:
     try:
         return float(value or 0.0)
@@ -153,6 +185,36 @@ def score_out_of_10(value: Any, max_score: float) -> float:
     score = numeric_score(value)
     denominator = max(max_score, score) if max(max_score, score) > 0 else 1.0
     return round(min(10.0, max(0.0, score / denominator * 10.0)), 1)
+
+
+HASH_RE = re.compile(r"^(?:[a-f0-9]{12,}|(?:raw_chunk|document_summary|procedure_summary|docsum|proc)[:_][a-f0-9_:-]+)$", re.I)
+
+
+def is_hash_like(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and HASH_RE.match(text))
+
+
+def display_source_title(row: dict[str, Any], lookup: dict[str, str] | None = None) -> str:
+    lookup = lookup or {}
+    doc_id = str(row.get("doc_id") or "")
+    if doc_id and lookup.get(doc_id):
+        return compact_text(lookup[doc_id], 300)
+    for key in ("title", "label", "source_path", "local_path", "path", "file_name"):
+        value = row.get(key)
+        if not value or is_hash_like(value):
+            continue
+        text = str(value)
+        if "\\" in text or "/" in text:
+            stem = Path(text).stem
+            if stem and not is_hash_like(stem):
+                return compact_text(stem, 300)
+        return compact_text(text, 300)
+    for key in ("doc_id", "id"):
+        value = row.get(key)
+        if value and not is_hash_like(value):
+            return compact_text(value, 300)
+    return "Источник"
 
 
 def format_seconds(value: Any) -> str:
@@ -240,7 +302,7 @@ def local_rows_from_literature(run: Any) -> list[dict[str, Any]]:
             {
                 "#": index,
                 "Релевантность /10": score_out_of_10(row.get("score"), max_score),
-                "Заголовок": row.get("title") or row.get("doc_id") or row.get("source_path"),
+                "Заголовок": display_source_title(row),
                 "Фрагмент": row.get("preview") or row.get("summary") or row.get("source_path"),
             }
         )
@@ -253,6 +315,22 @@ def orchestration_rows(orchestration: Any | None, section: str) -> list[dict[str
     return list((orchestration.retrieved_context.as_dict().get(section) or []))
 
 
+def orchestration_title_lookup(orchestration: Any | None) -> dict[str, str]:
+    if orchestration is None:
+        return {}
+    context = orchestration.retrieved_context.as_dict()
+    lookup: dict[str, str] = {}
+    for rows in context.values():
+        for row in rows or []:
+            doc_id = str(row.get("doc_id") or "")
+            if not doc_id or lookup.get(doc_id):
+                continue
+            title = display_source_title(row)
+            if title and title != "Источник" and not is_hash_like(title):
+                lookup[doc_id] = title
+    return lookup
+
+
 def comparison_rows(run: Any | None, name: str) -> list[dict[str, Any]]:
     if run is None or not getattr(run, "comparison", None):
         return []
@@ -263,7 +341,9 @@ def evidence_label(evidence: list[dict[str, Any]], *, limit: int = 4) -> str:
     labels: list[str] = []
     for item in evidence[:limit]:
         citation = item.get("citation")
-        title = item.get("title") or item.get("locator") or ""
+        title = display_source_title(item) if isinstance(item, dict) else ""
+        if title == "Источник":
+            title = item.get("locator") or ""
         if citation:
             labels.append(f"[{citation}] {compact_text(title, 80)}")
     return "; ".join(labels)
@@ -308,6 +388,7 @@ def orchestration_source_rows(orchestration: Any | None) -> list[dict[str, Any]]
             all_rows.append((section, row))
     max_score = max([numeric_score(row.get("score")) for _, row in all_rows] or [1.0])
     labels = {"raw": "Raw RAG", "summaries": "Summary", "tables": "Excel/Table", "graph": "Graph"}
+    title_lookup = orchestration_title_lookup(orchestration)
     rows: list[dict[str, Any]] = []
     for index, (section, row) in enumerate(all_rows[:60], start=1):
         rows.append(
@@ -315,7 +396,7 @@ def orchestration_source_rows(orchestration: Any | None) -> list[dict[str, Any]]
                 "#": index,
                 "Тип": labels.get(section, section),
                 "Релевантность /10": score_out_of_10(row.get("score"), max_score),
-                "Источник": row.get("title") or row.get("label") or row.get("doc_id") or row.get("source_path") or row.get("id"),
+                "Источник": display_source_title(row, title_lookup),
                 "Фрагмент": row.get("preview") or row.get("summary") or row.get("path") or row.get("relation") or "",
             }
         )
@@ -329,12 +410,13 @@ def render_orchestration_source_links(orchestration: Any | None) -> None:
     rows = [row for name in ("raw", "summaries", "tables") for row in (context.get(name) or []) if row.get("source_type") != "diagnostics"]
     if not rows:
         return
+    title_lookup = orchestration_title_lookup(orchestration)
     render_soft_heading("Локальные источники и таблицы")
     shown = 0
     for index, row in enumerate(rows[:40], start=1):
         found = local_file_for_row(row)
         link = row.get("url") or ""
-        title = source_title(row)
+        title = display_source_title(row, title_lookup)
         cols = st.columns([7, 1.6, 1.6])
         cols[0].write(f"{index}. {compact_text(title, 240)}")
         if link and str(link).startswith(("http://", "https://")):
@@ -476,11 +558,12 @@ def user_report_extra_sections(record: dict[str, Any]) -> list[dict[str, Any]]:
     sections: list[dict[str, Any]] = []
     method_rows = method_comparison_rows(record)
     if method_rows:
+        summary_text = method_comparison_summary_text(record)
         headers = list(method_rows[0].keys())
         sections.append(
             {
                 "title": "Сравнение решений",
-                "paragraphs": [],
+                "paragraphs": [line for line in summary_text.splitlines() if line and not line.startswith("##")] if summary_text else [],
                 "table": {"headers": headers, "rows": [[str(row.get(header, "")) for header in headers] for row in method_rows[:20]]},
             }
         )
@@ -534,6 +617,42 @@ def user_report_extra_sections(record: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return sections
+
+
+def method_comparison_summary_text(record: dict[str, Any]) -> str:
+    comparison = record.get("method_comparison")
+    if comparison is None:
+        return ""
+    rows = comparison.as_dict().get("rows") if hasattr(comparison, "as_dict") else getattr(comparison, "rows", [])
+    if not rows:
+        return ""
+    lines = ["## Сравнение лучших методик", ""]
+    for index, row in enumerate(rows[:5], start=1):
+        payload = row if isinstance(row, dict) else row.as_dict()
+        item = payload.get("item") or f"Методика {index}"
+        details: list[str] = []
+        for label, key in (
+            ("условия", "conditions"),
+            ("свойства/KPI", "properties"),
+            ("численные значения", "numeric_values"),
+            ("экономика", "business_context"),
+            ("эффекты", "advantages"),
+            ("ограничения", "limitations"),
+        ):
+            values = _as_text_list(payload.get(key), limit=4)
+            if values:
+                details.append(f"{label}: {', '.join(values)}")
+        evidence = evidence_label(payload.get("evidence") or [], limit=3)
+        if evidence:
+            details.append(f"источники: {evidence}")
+        if details:
+            lines.append(f"{index}. {item}: " + "; ".join(details) + ".")
+        else:
+            lines.append(f"{index}. {item}: найдена как релевантная методика, но структурированных параметров пока мало.")
+    missing = getattr(comparison, "missing_evidence", None) or []
+    if missing:
+        lines.extend(["", "Пробелы: часть методик не имеет полной таблицы условий/численных диапазонов в текущем evidence pack."])
+    return "\n".join(lines)
 
 
 def confidence_label(run: Any | None, orchestration: Any | None) -> tuple[str, float]:
@@ -828,6 +947,42 @@ def render_download(path: Path | None, label: str, mime: str) -> None:
     st.download_button(label, data=data, file_name=Path(path).name, mime=mime, use_container_width=True, key=key)
 
 
+def build_orchestration_local_sources_archive(orchestration: Any | None, output_path: Path) -> Path | None:
+    if orchestration is None:
+        return None
+    context = orchestration.retrieved_context.as_dict()
+    title_lookup = orchestration_title_lookup(orchestration)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    files: list[tuple[Path, str]] = []
+    seen_paths: set[Path] = set()
+    used_names: set[str] = set()
+    for section in ("raw", "summaries", "tables"):
+        for row in context.get(section) or []:
+            found = local_file_for_row(row)
+            if found is None:
+                continue
+            resolved = found.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            title = display_source_title(row, title_lookup)
+            slug = safe_report_id(title, prefix="source").split("_")[0][:70].strip("_") or found.stem
+            arcname = f"{len(files) + 1:02d}_{slug}{found.suffix}"
+            while arcname.casefold() in used_names:
+                arcname = f"{len(files) + 1:02d}_{slug}_{len(used_names) + 1}{found.suffix}"
+            used_names.add(arcname.casefold())
+            files.append((found, arcname))
+    if not files:
+        return None
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        toc_lines = ["rank;title;file_name"]
+        for index, (path, arcname) in enumerate(files, start=1):
+            archive.write(path, arcname=arcname)
+            toc_lines.append(f"{index};{path.stem.replace(';', ',')};{arcname}")
+        archive.writestr("README.csv", "\n".join(toc_lines) + "\n")
+    return output_path
+
+
 def orchestration_output_dir(record: dict[str, Any]) -> Path:
     run_id = safe_report_id(f"{record.get('created_at', '')}_{record.get('query', '')}", prefix="rag")
     return ROOT / "data" / "processed" / "rag_runs" / run_id
@@ -854,46 +1009,81 @@ def render_soft_text(text: str) -> None:
 
 
 def citation_url_map(run: Any | None, orchestration: Any | None = None) -> dict[str, str]:
+    return {key: value["href"] for key, value in citation_ref_map(run, orchestration).items()}
+
+
+def citation_ref_map(run: Any | None, orchestration: Any | None = None) -> dict[str, dict[str, str]]:
     mapping: dict[str, str] = {}
+    refs: dict[str, dict[str, str]] = {}
+
+    def add_ref(key: Any, href: str, label: str) -> None:
+        if not key or not href:
+            return
+        normalized = str(key).casefold()
+        refs[normalized] = {"href": href, "label": compact_text(label or "Открыть источник", 120)}
+        mapping[normalized] = href
+
     if run is not None:
         for index, result in enumerate(getattr(run, "results", []) or [], start=1):
             link = preferred_web_link(result)
             if link:
-                mapping[f"web:{index}"] = link
+                label = getattr(result, "title", "") or "Web-источник"
+                add_ref(f"web:{index}", link, label)
                 result_id = getattr(result, "result_id", None)
                 if result_id:
-                    mapping[f"web:{result_id}"] = link
+                    add_ref(f"web:{result_id}", link, label)
         for index, row in enumerate(getattr(run, "local_matches", []) or [], start=1):
             found = local_file_for_row(row)
             if found:
-                mapping[f"local:{index}"] = found.resolve().as_uri()
+                add_ref(f"local:{index}", found.resolve().as_uri(), display_source_title(row))
     if orchestration is not None:
-        for section, rows in (getattr(orchestration, "retrieved_context", None).as_dict() if getattr(orchestration, "retrieved_context", None) else {}).items():
+        context = getattr(orchestration, "retrieved_context", None).as_dict() if getattr(orchestration, "retrieved_context", None) else {}
+        title_lookup = orchestration_title_lookup(orchestration)
+        doc_links: dict[str, tuple[str, str]] = {}
+        for rows in context.values():
+            for row in rows or []:
+                doc_id = str(row.get("doc_id") or "")
+                found = local_file_for_row(row)
+                if doc_id and found and doc_id not in doc_links:
+                    doc_links[doc_id] = (found.resolve().as_uri(), display_source_title(row, title_lookup))
+        for section, rows in context.items():
             for index, row in enumerate(rows or [], start=1):
                 citation = str(row.get("id") or f"{section}:{index}")
                 link = row.get("url") or ""
                 if not link:
                     found = local_file_for_row(row)
                     link = found.resolve().as_uri() if found else ""
+                if not link and row.get("doc_id") and str(row.get("doc_id")) in doc_links:
+                    link = doc_links[str(row.get("doc_id"))][0]
                 if not link and row.get("doi"):
                     link = f"https://doi.org/{row['doi']}"
                 if link:
-                    mapping[citation.casefold()] = link
-                    mapping[f"{section}:{index}".casefold()] = link
-    return mapping
+                    label = display_source_title(row, title_lookup)
+                    if label == "Источник" and row.get("doc_id") and str(row.get("doc_id")) in doc_links:
+                        label = doc_links[str(row.get("doc_id"))][1]
+                    add_ref(citation, link, label)
+                    add_ref(f"{section}:{index}", link, label)
+                    chunk_id = row.get("chunk_id") or ""
+                    if chunk_id:
+                        add_ref(f"raw:{chunk_id}", link, label)
+                    summary_id = row.get("summary_id") or row.get("document_summary_id") or ""
+                    if summary_id:
+                        add_ref(f"summaries:{summary_id}", link, label)
+    return refs
 
 
 def linkify_citations(text: str, run: Any | None, orchestration: Any | None = None) -> str:
-    links = citation_url_map(run, orchestration)
+    refs = citation_ref_map(run, orchestration)
     safe = escape(compact_text(text, 3000))
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1).casefold()
-        href = links.get(key)
-        label = match.group(0)
-        if not href:
-            return label
-        return f'<a href="{escape(href, quote=True)}" target="_blank">{label}</a>'
+        ref = refs.get(key)
+        if not ref:
+            return match.group(0)
+        href = ref["href"]
+        label = ref["label"]
+        return f'<a href="{escape(href, quote=True)}" target="_blank">{escape(label)}</a>'
 
     return re.sub(r"\[([A-Za-z_][A-Za-z0-9_:-]+)\]", replace, safe, flags=re.I)
 
@@ -965,7 +1155,7 @@ def render_local_source_links(run: Any | None) -> None:
     shown = 0
     for index, row in enumerate(rows[:40], start=1):
         found = local_file_for_row(row)
-        title = source_title(row)
+        title = display_source_title(row)
         cols = st.columns([7, 1.6, 1.6])
         cols[0].write(f"{index}. {compact_text(title, 240)}")
         if found is None:
@@ -992,7 +1182,7 @@ def local_summary_text(run: Any | None) -> str:
         return "Локальные источники по запросу не найдены."
     titles = []
     for row in rows[:6]:
-        title = source_title(row)
+        title = display_source_title(row)
         if title:
             titles.append(title)
     fragments = [
@@ -1180,9 +1370,19 @@ def render_reports(record: dict[str, Any]) -> None:
         with cols[2]:
             render_download(getattr(run, "report_pdf_path", None), "PDF: полный отчет", "application/pdf")
             render_download(getattr(run, "report_docx_path", None), "DOCX: полный отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        archive_dir = Path(run.output_dir) / "user_archives" if getattr(run, "output_dir", None) else answer_output_dir(record) / "archives"
+        web_archive = build_web_publications_archive(run, archive_dir / "web_publication_links.zip")
+        render_download(web_archive, "ZIP: web-ссылки", "application/zip")
 
     if orchestration is None:
         return
+    local_archive = build_orchestration_local_sources_archive(
+        orchestration,
+        orchestration_output_dir(record) / "user_archives" / "local_sources.zip",
+    )
+    if local_archive is not None:
+        render_soft_heading("Архив исходных документов")
+        render_download(local_archive, "ZIP: локальные статьи и таблицы", "application/zip")
     render_soft_heading("Локальный отчет по evidence")
     output_dir = orchestration_output_dir(record)
     full_exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer, query=query)
@@ -1280,13 +1480,11 @@ def render_literature_result(record: dict[str, Any]) -> None:
 
     with tabs[2]:
         render_soft_heading("Скорость и стоимость модели")
-        cols = st.columns(4)
-        cols[0].metric("Отчет", metrics["answer_time"])
-        cols[1].metric("Сравнение", metrics["comparison_time"])
-        cols[2].metric("Токены отчета", metrics["tokens"])
-        cols[3].metric("Стоимость запроса", metrics["cost"])
+        cols = st.columns(2)
+        cols[0].metric("Время ответа модели", metrics["answer_time"])
+        cols[1].metric("Стоимость запроса", metrics["cost"])
 
-        chart_height = 280
+        chart_height = 320
         col_a, col_b = st.columns(2)
         years = table_df(year_counts(run)) if run is not None else pd.DataFrame()
         sources = table_df(source_counts(run)) if run is not None else pd.DataFrame()
@@ -1294,7 +1492,7 @@ def render_literature_result(record: dict[str, Any]) -> None:
             render_soft_heading("Публикации по годам")
             if not years.empty:
                 years = years.rename(columns={"year": "Год", "count": "Количество"})
-                st.bar_chart(years.set_index("Год"), use_container_width=True, height=chart_height)
+                render_horizontal_bar_chart(years, label_col="Год", value_col="Количество", empty_text="Нет данных по годам публикаций.", height=chart_height)
             else:
                 st.info("Нет данных по годам публикаций.")
         with col_b:
@@ -1302,7 +1500,7 @@ def render_literature_result(record: dict[str, Any]) -> None:
             if not sources.empty:
                 sources = sources.rename(columns={"source": "База", "count": "Количество"})
                 sources["База"] = sources["База"].map(lambda value: SEARCH_SOURCE_LABELS.get(value, value))
-                st.bar_chart(sources.set_index("База"), use_container_width=True, height=chart_height)
+                render_horizontal_bar_chart(sources, label_col="База", value_col="Количество", empty_text="Нет данных по базам данных.", height=chart_height)
             else:
                 st.info("Нет данных по базам данных.")
 
@@ -1314,7 +1512,7 @@ def render_literature_result(record: dict[str, Any]) -> None:
                 {"Тип": "Deep Search", "Количество": len(getattr(run, "deep_results", []) or [])},
             ]
         )
-        st.bar_chart(coverage.set_index("Тип"), use_container_width=True, height=chart_height)
+        render_horizontal_bar_chart(coverage, label_col="Тип", value_col="Количество", empty_text="Нет данных по покрытию.", height=chart_height)
 
     with tabs[3]:
         render_reports(record)
@@ -1379,6 +1577,9 @@ def render_result(record: dict[str, Any]) -> None:
         if comparison is not None:
             render_soft_heading("Краткий вывод по сравнению")
             render_report_body(comparison.answer_summary, run, orchestration)
+            summary_text = method_comparison_summary_text(record)
+            if summary_text:
+                render_report_body(summary_text, run, orchestration)
 
     with tabs[1]:
         render_soft_heading(comparison_title)
@@ -1413,12 +1614,10 @@ def render_result(record: dict[str, Any]) -> None:
 
     with tabs[3]:
         render_soft_heading("Скорость и стоимость модели")
-        metric_cols = st.columns(4)
-        metric_cols[0].metric("Отчет", metrics["answer_time"])
-        metric_cols[1].metric("Токены отчета", metrics["tokens"])
-        metric_cols[2].metric("Стоимость запроса", metrics["cost"])
-        metric_cols[3].metric("Модель", metrics["model"])
-        chart_height = 280
+        metric_cols = st.columns(2)
+        metric_cols[0].metric("Время ответа модели", metrics["answer_time"])
+        metric_cols[1].metric("Стоимость запроса", metrics["cost"])
+        chart_height = 320
         coverage = pd.DataFrame(
             [
                 {"Тип": "Raw RAG", "Количество": len(orchestration_rows(orchestration, "raw"))},
@@ -1429,14 +1628,14 @@ def render_result(record: dict[str, Any]) -> None:
             ]
         )
         render_soft_heading("Покрытие источников")
-        st.bar_chart(coverage.set_index("Тип"), use_container_width=True, height=chart_height)
+        render_horizontal_bar_chart(coverage, label_col="Тип", value_col="Количество", empty_text="Нет данных по покрытию источников.", height=chart_height)
         if run is not None:
             sources = table_df(source_counts(run))
             if not sources.empty:
                 render_soft_heading("Web-источники по базам данных")
                 sources = sources.rename(columns={"source": "База", "count": "Количество"})
                 sources["База"] = sources["База"].map(lambda value: SEARCH_SOURCE_LABELS.get(value, value))
-                st.bar_chart(sources.set_index("База"), use_container_width=True, height=chart_height)
+                render_horizontal_bar_chart(sources, label_col="База", value_col="Количество", empty_text="Нет данных по базам данных.", height=chart_height)
         else:
             st.info("Web-поиск не запускался.")
         if request_type == "Бизнес-аналитика":
@@ -1448,7 +1647,7 @@ def render_result(record: dict[str, Any]) -> None:
                 chart_rows = chart_rows.dropna(subset=["Значение"])
                 if not chart_rows.empty:
                     chart_rows["Серия"] = chart_rows["Компания / страна"] + " / " + chart_rows["Показатель"]
-                    st.bar_chart(chart_rows.set_index("Серия")[["Значение"]], use_container_width=True, height=chart_height)
+                    render_horizontal_bar_chart(chart_rows, label_col="Серия", value_col="Значение", empty_text="Нет рыночных данных для графика.", height=360)
             share_rows = table_df(market_share_rows(record))
             if not share_rows.empty:
                 render_soft_heading("Доли компаний / стран в найденной выборке")
@@ -1460,7 +1659,7 @@ def render_result(record: dict[str, Any]) -> None:
                     + " / "
                     + share_chart["Период"].astype(str)
                 )
-                st.bar_chart(share_chart.set_index("Серия")[["Доля, %"]], use_container_width=True, height=chart_height)
+                render_horizontal_bar_chart(share_chart, label_col="Серия", value_col="Доля, %", empty_text="Нет данных по долям.", height=360)
                 render_table(market_share_rows(record))
             elif record.get("market_radar") is None:
                 st.caption("Рыночные графики не строились: запрос не содержит явного рыночного среза.")
@@ -1561,7 +1760,6 @@ def execute_query(query: str, options: dict[str, Any]) -> dict[str, Any]:
 def render_sidebar() -> dict[str, Any]:
     with st.sidebar:
         st.header("Настройки")
-        request_type = st.radio("Тип запроса", list(REQUEST_TYPES), horizontal=False)
         local_search = st.checkbox("Local search", value=True)
         web_search = st.checkbox("Web literature search", value=True)
         deep_search = st.checkbox("Deep Search", value=False)
@@ -1584,7 +1782,6 @@ def render_sidebar() -> dict[str, Any]:
             fetch_excerpts = st.checkbox("Загружать excerpts сайтов (медленнее)", value=False)
             deep_search_max_seconds = st.slider("Лимит Deep Search, сек", min_value=30, max_value=900, value=180, step=30)
     return {
-        "request_type": request_type,
         "retrieval_profile": None if retrieval_profile == "default" else retrieval_profile,
         "local_search": local_search,
         "web_search": web_search,
@@ -1604,11 +1801,135 @@ def render_sidebar() -> dict[str, Any]:
     }
 
 
+def render_app_header() -> None:
+    logo_col, text_col = st.columns([0.13, 0.87], vertical_alignment="center")
+    with logo_col:
+        if METALMIND_EMBLEM_PATH.exists():
+            st.image(str(METALMIND_EMBLEM_PATH), width=88)
+    with text_col:
+        st.markdown(
+            """
+            <div class="metalmind-title">MetalMind</div>
+            <div class="metalmind-subtitle">
+                AI-powered search system для материаловедения, металлургии и горного дела
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_request_type_selector() -> str:
+    selected_from_url = unquote(str(st.query_params.get("request_type", "")))
+    if selected_from_url in REQUEST_TYPES:
+        st.session_state["request_type"] = selected_from_url
+    st.session_state.setdefault("request_type", next(iter(REQUEST_TYPES)))
+    request_type = st.session_state["request_type"]
+    st.markdown(
+        """
+        <div class="request-type-panel">
+            <div class="request-type-eyebrow">Тип запроса</div>
+            <div class="request-type-heading">Выберите сценарий анализа перед запуском поиска</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    card_cols = st.columns(3)
+    for col, title in zip(card_cols, REQUEST_TYPES):
+        is_active = title == request_type
+        class_name = "request-type-card-link request-type-card-active" if is_active else "request-type-card-link"
+        routes = " · ".join(ROUTE_LABELS.get(route, route) for route in REQUEST_TYPES[title])
+        href = f"?request_type={quote(title)}"
+        with col:
+            st.markdown(
+                f"""
+                <a class="{class_name}" href="{href}" target="_self">
+                    <div class="request-type-card-title">{escape(title)}</div>
+                    <div class="request-type-card-body">{escape(REQUEST_TYPE_DESCRIPTIONS[title])}</div>
+                    <div class="request-type-card-routes">{escape(routes)}</div>
+                </a>
+                """,
+                unsafe_allow_html=True,
+            )
+    return request_type
+
+
 def main() -> None:
-    st.set_page_config(page_title="Oreacle", layout="wide")
+    page_icon = str(METALMIND_EMBLEM_PATH) if METALMIND_EMBLEM_PATH.exists() else "⚙️"
+    st.set_page_config(page_title="MetalMind", page_icon=page_icon, layout="wide")
     st.markdown(
         """
         <style>
+        .metalmind-title {
+            font-size: 2.45rem;
+            font-weight: 760;
+            letter-spacing: 0;
+            color: #f3f7ff;
+            line-height: 1.05;
+        }
+        .metalmind-subtitle {
+            font-size: 1.02rem;
+            color: #c8d4e4;
+            margin-top: 0.25rem;
+        }
+        .request-type-panel {
+            margin-top: 0.95rem;
+            padding: 0.82rem 1rem 0.72rem 1rem;
+            border: 1px solid rgba(93, 126, 166, 0.5);
+            border-radius: 14px;
+            background: linear-gradient(135deg, rgba(24, 38, 61, 0.92), rgba(35, 47, 70, 0.78));
+        }
+        .request-type-eyebrow {
+            color: #50c7ff;
+            text-transform: uppercase;
+            font-size: 0.74rem;
+            font-weight: 760;
+            letter-spacing: 0.08em;
+        }
+        .request-type-heading {
+            color: #f3f7ff;
+            font-size: 1.18rem;
+            font-weight: 680;
+            margin-top: 0.15rem;
+        }
+        .request-type-card-link {
+            display: block;
+            min-height: 7.1rem;
+            padding: 0.82rem 0.92rem;
+            border: 1px solid rgba(101, 122, 148, 0.45);
+            border-radius: 12px;
+            background: rgba(24, 31, 45, 0.56);
+            margin-top: 0.4rem;
+            text-decoration: none;
+            transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+        }
+        .request-type-card-link:hover {
+            border-color: rgba(80, 199, 255, 0.75);
+            background: rgba(31, 43, 63, 0.78);
+            transform: translateY(-1px);
+            text-decoration: none;
+        }
+        .request-type-card-active {
+            border-color: rgba(255, 82, 96, 0.92);
+            box-shadow: 0 0 0 1px rgba(255, 82, 96, 0.35), 0 10px 30px rgba(0, 0, 0, 0.16);
+            background: rgba(52, 39, 50, 0.72);
+        }
+        .request-type-card-title {
+            color: #ffffff;
+            font-size: 1rem;
+            font-weight: 740;
+            margin-bottom: 0.35rem;
+        }
+        .request-type-card-body {
+            color: #cbd5e3;
+            font-size: 0.9rem;
+            line-height: 1.42;
+        }
+        .request-type-card-routes {
+            color: #8ed9ff;
+            font-size: 0.78rem;
+            font-weight: 650;
+            margin-top: 0.55rem;
+        }
         .literature-section-title {
             font-size: 0.98rem;
             font-weight: 400;
@@ -1626,9 +1947,9 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.title("Oreacle")
-    st.caption("RAG + web literature search для материаловедения, металлургии и горного дела")
+    render_app_header()
     options = render_sidebar()
+    options["request_type"] = render_request_type_selector()
 
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("records", [])
@@ -1642,7 +1963,7 @@ def main() -> None:
         st.session_state["messages"].append({"role": "user", "content": query})
         with st.chat_message("user"):
             st.write(query)
-        with st.status("Выполняю поиск и сбор evidence...", expanded=True) as status:
+        with st.status("Запрос выполняется", expanded=True) as status:
             record = execute_query(query, options)
             st.session_state["records"].append(record)
             status.update(label="Готово", state="complete")

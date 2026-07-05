@@ -28,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MOJIBAKE_MARKERS = ("Р", "С", "Ð", "Ñ", "в†", "В°", "Вµ")
 MAX_LOCAL_ARCHIVE_FILES = 20
 MAX_LOCAL_ARCHIVE_BYTES = 250 * 1024 * 1024
+HASH_LIKE_RE = re.compile(r"^(?:[a-f0-9]{12,}|(?:raw_chunk|document_summary|procedure_summary|docsum|proc)[:_][a-f0-9_:-]+)$", re.I)
 DEFAULT_ROUTERAI_BUDGET_RUB = 1500.0
 XML_INVALID_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF]")
 DEFAULT_ROUTERAI_PROMPT_RUB_PER_1K = 0.03
@@ -106,8 +107,27 @@ def display_query(run: Any) -> str:
     )
 
 
+def _is_hash_like(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and HASH_LIKE_RE.match(text))
+
+
 def source_title(row: dict[str, Any]) -> str:
-    return compact_text(row.get("title") or row.get("doc_id") or row.get("source_path") or row.get("local_path") or "Источник", 300)
+    for key in ("title", "label", "source_path", "local_path", "path", "file_name"):
+        value = row.get(key)
+        if not value or _is_hash_like(value):
+            continue
+        text = str(value)
+        if "\\" in text or "/" in text:
+            stem = Path(text).stem
+            if stem and not _is_hash_like(stem):
+                return compact_text(stem, 300)
+        return compact_text(text, 300)
+    for key in ("doc_id", "id"):
+        value = row.get(key)
+        if value and not _is_hash_like(value):
+            return compact_text(value, 300)
+    return "Источник"
 
 
 def source_link(result: Any) -> str:
@@ -1413,15 +1433,8 @@ def row_locator(row: dict[str, Any]) -> str:
 
 
 def row_title(row: dict[str, Any]) -> str:
-    return compact_text(
-        row.get("title")
-        or row.get("label")
-        or row.get("doc_id")
-        or row.get("id")
-        or row.get("source_path")
-        or "Evidence",
-        260,
-    )
+    title = source_title(row)
+    return compact_text(title if title != "Источник" else row.get("node_id") or "Evidence", 260)
 
 
 def append_orchestration_rows(lines: list[str], title: str, rows: list[dict[str, Any]], *, limit: int = 20) -> None:

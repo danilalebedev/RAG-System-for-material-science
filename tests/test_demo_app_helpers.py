@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 from app.ui.demo_app import (
     answer_metrics,
+    citation_ref_map,
     comparison_answer_sections,
+    display_source_title,
     local_rows_from_literature,
     market_radar_rows,
     method_comparison_rows,
@@ -244,6 +246,53 @@ def test_publication_tables_are_compact_user_facing() -> None:
     assert list(local_rows[0]) == ["#", "Релевантность /10", "Заголовок", "Фрагмент"]
     assert web_rows[0]["Релевантность /10"] == 10.0
     assert local_rows[0]["Релевантность /10"] == 10.0
+
+
+def test_display_source_title_prefers_file_name_over_hash() -> None:
+    row = {
+        "doc_id": "162cb4ec8dc1d8c1",
+        "source_path": r"C:\repo\data\raw\Обзор распределения металлов.docx",
+    }
+
+    assert display_source_title(row) == "Обзор распределения металлов"
+
+
+def test_citation_ref_map_links_summary_rows_through_same_doc_id(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "Распределение Au Ag МПГ.docx"
+    source.write_text("demo", encoding="utf-8")
+    monkeypatch.setattr("app.ui.demo_app.local_file_for_row", lambda row: source if row.get("local_path") else None)
+    orchestration = SimpleNamespace(
+        retrieved_context=SimpleNamespace(
+            as_dict=lambda: {
+                "raw": [
+                    {
+                        "id": "raw_chunk:abc123456789",
+                        "chunk_id": "abc123456789",
+                        "doc_id": "doc-hash",
+                        "local_path": str(source),
+                        "preview": "text",
+                    }
+                ],
+                "summaries": [
+                    {
+                        "id": "document_summary:docsum_doc_hash",
+                        "doc_id": "doc-hash",
+                        "preview": "summary",
+                    }
+                ],
+                "tables": [],
+                "graph": [],
+                "web": [],
+            }
+        )
+    )
+
+    refs = citation_ref_map(None, orchestration)
+
+    assert "raw:abc123456789" in refs
+    assert "document_summary:docsum_doc_hash" in refs
+    assert refs["document_summary:docsum_doc_hash"]["href"].startswith("file:///")
+    assert refs["document_summary:docsum_doc_hash"]["label"] == "Распределение Au Ag МПГ"
 
 
 def test_comparison_answer_sections_parse_three_user_blocks() -> None:
