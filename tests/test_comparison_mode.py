@@ -189,3 +189,45 @@ def test_method_comparison_filters_domain_noise_for_water_treatment() -> None:
     assert result.rows
     assert result.rows[0].item == "reverse osmosis"
     assert all(row.item != "flotation" for row in result.rows)
+
+
+def test_method_comparison_falls_back_to_raw_when_strict_filter_empties_rows() -> None:
+    class ElectrolysisFallbackOrchestration(FakeOrchestration):
+        def as_dict(self) -> dict[str, Any]:
+            payload = super().as_dict()
+            payload["retrieved_context"]["summaries"] = [
+                {
+                    "id": "summaries:noise",
+                    "title": "Ore flotation",
+                    "preview": "Flotation improves nickel recovery from sulfide ore.",
+                    "row": {
+                        "methods": ["flotation"],
+                        "materials": ["nickel ore"],
+                    },
+                }
+            ]
+            payload["retrieved_context"]["raw"] = [
+                {
+                    "id": "raw:electrolysis",
+                    "title": "Nickel electrowinning catholyte circulation",
+                    "preview": (
+                        "Diaphragm cell tests describe electrolyte circulation, catholyte feed, "
+                        "anode compartment separation and outlet flow control for nickel electrowinning."
+                    ),
+                    "score": 7.4,
+                }
+            ]
+            payload["retrieved_context"]["tables"] = []
+            payload["retrieved_context"]["graph"] = []
+            payload["evidence"] = [{"citation": "raw:electrolysis", "route": "raw", "title": "Nickel electrowinning catholyte circulation"}]
+            return payload
+
+    result = build_method_comparison_from_orchestration(
+        "Организация циркуляции католита при производстве никелевых катодов методом электроэкстракции",
+        ElectrolysisFallbackOrchestration(),
+        top_k=5,
+    )
+
+    assert result.rows
+    assert any("electrolyte" in " ".join(row.processes).casefold() or "diaphragm" in row.item.casefold() for row in result.rows)
+    assert all(row.item != "flotation" for row in result.rows)

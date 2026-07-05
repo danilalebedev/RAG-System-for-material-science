@@ -534,6 +534,11 @@ def _query_focus_terms(query: str) -> list[str]:
 
 
 def _row_text(row: ComparisonRow) -> str:
+    evidence_text = " ".join(
+        " ".join(_flatten({key: item.get(key) for key in ("title", "locator", "preview", "route", "citation")}))
+        for item in row.evidence
+        if isinstance(item, dict)
+    )
     return " ".join(
         [
             row.item,
@@ -546,6 +551,7 @@ def _row_text(row: ComparisonRow) -> str:
             " ".join(row.business_context),
             " ".join(row.advantages),
             " ".join(row.limitations),
+            evidence_text,
         ]
     ).casefold()
 
@@ -635,6 +641,35 @@ def _filter_and_boost_for_query(query: str, rows: list[ComparisonRow]) -> list[C
         return []
     scored.sort(key=lambda item: (item[0], item[1].score), reverse=True)
     return [row for _, row in scored]
+
+
+def _filter_or_fallback_rows(
+    query: str,
+    rows: list[ComparisonRow],
+    context: dict[str, list[dict[str, Any]]],
+    evidence: list[dict[str, Any]],
+    *,
+    top_k: int,
+) -> list[ComparisonRow]:
+    filtered = _filter_and_boost_for_query(query, rows)
+    fallback_rows = _rows_from_context_fallback(context, evidence, top_k=top_k * 2)
+    fallback_filtered = _filter_and_boost_for_query(query, fallback_rows)
+    if filtered:
+        min_rows = min(3, top_k)
+        if len(filtered) >= min_rows:
+            return filtered
+        existing = {re.sub(r"\W+", " ", row.item.casefold()).strip() for row in filtered}
+        supplemented = list(filtered)
+        for row in fallback_filtered:
+            key = re.sub(r"\W+", " ", row.item.casefold()).strip()
+            if key in existing:
+                continue
+            supplemented.append(row)
+            existing.add(key)
+            if len(supplemented) >= min_rows:
+                break
+        return supplemented
+    return fallback_filtered or fallback_rows
 
 
 def _row_payload(summary_row: dict[str, Any]) -> dict[str, Any]:
@@ -1011,7 +1046,7 @@ def build_method_comparison_from_orchestration(
     rows.extend(_rows_from_graph(context, evidence, top_k=top_k * 2))
     if not rows:
         rows = _rows_from_context_fallback(context, evidence, top_k=top_k)
-    rows = _filter_and_boost_for_query(query, rows)
+    rows = _filter_or_fallback_rows(query, rows, context, evidence, top_k=top_k)
     rows = _augment_rows_with_tables(rows, context.get("tables") or [])
     rows = _augment_rows_with_graph(rows, context.get("graph") or [])
     rows = _rank_rows(rows, top_k=top_k)
@@ -1074,7 +1109,7 @@ def compare_methods(
     rows.extend(_rows_from_graph(context, evidence, top_k=top_k))
     if not rows:
         rows = _rows_from_context_fallback(context, evidence, top_k=top_k)
-    rows = _filter_and_boost_for_query(query, rows)
+    rows = _filter_or_fallback_rows(query, rows, context, evidence, top_k=top_k)
     rows = _augment_rows_with_tables(rows, context.get("tables") or [])
     rows = _augment_rows_with_graph(rows, context.get("graph") or [])
     rows = _rank_rows(rows, top_k=top_k)
