@@ -16,8 +16,27 @@ Commodity = Literal[
     "iron ore",
     "cobalt",
     "lithium",
+    "water treatment",
+    "company financials",
 ]
-Metric = Literal["production", "sales", "guidance", "capacity", "reserves", "resources"]
+Metric = Literal[
+    "production",
+    "sales",
+    "revenue",
+    "guidance",
+    "capacity",
+    "reserves",
+    "resources",
+    "capex",
+    "opex",
+    "tco",
+    "energy",
+    "reagents",
+    "water_recovery",
+    "throughput",
+    "residuals",
+    "maturity",
+]
 Confidence = Literal["high", "medium", "low"]
 SourceStatusValue = Literal["loaded", "unavailable", "fallback"]
 
@@ -41,7 +60,7 @@ class MarketSource(BaseModel):
     source_id: str
     source_name: str
     source_url: str
-    source_type: Literal["official_statistics", "industry_association", "company", "geological_survey"]
+    source_type: Literal["official_statistics", "industry_association", "company", "geological_survey", "engineering_reference"]
     commodities: list[Commodity] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     reliability_rank: int = 50

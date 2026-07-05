@@ -1207,25 +1207,6 @@ def answer_report_sections(
             )
         sections.append({"title": "Deep Search summaries", "paragraphs": [], "blocks": deep_blocks})
 
-    if orchestration is not None:
-        rows = orchestration_all_rows(orchestration)
-        data_rows = [row for row in rows if row.get("source_type") != "diagnostics"]
-        evidence_blocks: list[dict[str, str]] = []
-        for index, row in enumerate(data_rows[:25], start=1):
-            locator = row_locator(row)
-            locator_text = f"; {locator}" if locator else ""
-            evidence_blocks.append({"type": "heading", "text": f"{index}. {row_title(row)}{locator_text}"})
-            preview = compact_text(row.get("preview") or row.get("summary") or row.get("path"), 900)
-            if preview:
-                evidence_blocks.append({"type": "paragraph", "text": preview})
-        sections.append(
-            {
-                "title": "Local RAG evidence",
-                "paragraphs": [] if evidence_blocks else ["Local RAG evidence не найден."],
-                "blocks": evidence_blocks,
-            }
-        )
-
     return sections
 
 

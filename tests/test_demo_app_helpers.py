@@ -4,10 +4,12 @@ from types import SimpleNamespace
 
 from app.ui.demo_app import (
     answer_metrics,
+    citation_reference_rows,
     citation_ref_map,
     comparison_answer_sections,
     display_source_title,
     local_rows_from_literature,
+    linkify_citations,
     market_radar_rows,
     method_comparison_rows,
     run_query_orchestration_compat,
@@ -16,6 +18,7 @@ from app.ui.demo_app import (
     source_rows,
     workflow_summary_rows,
 )
+from app.query.reports import answer_report_sections
 
 
 def test_search_context_rows_are_user_facing() -> None:
@@ -168,7 +171,7 @@ def test_market_radar_rows_are_compact_user_facing() -> None:
 def test_market_radar_runs_only_for_market_like_queries() -> None:
     assert should_run_market_radar("Сравни производство стали в России и Китае за 2024 год")
     assert should_run_market_radar("Доли компаний на рынке никеля")
-    assert not should_run_market_radar(
+    assert should_run_market_radar(
         "Технико-экономическое сравнение вариантов подготовки воды для обогатительной фабрики"
     )
 
@@ -290,9 +293,53 @@ def test_citation_ref_map_links_summary_rows_through_same_doc_id(tmp_path, monke
     refs = citation_ref_map(None, orchestration)
 
     assert "raw:abc123456789" in refs
+    assert "raw:raw_chunk:abc123456789" in refs
     assert "document_summary:docsum_doc_hash" in refs
+    assert "summaries:docsum_doc_hash" in refs
     assert refs["document_summary:docsum_doc_hash"]["href"].startswith("file:///")
     assert refs["document_summary:docsum_doc_hash"]["label"] == "Распределение Au Ag МПГ"
+    assert refs["document_summary:docsum_doc_hash"]["number"] == "1"
+    assert ">[1]</a>" in linkify_citations("Источник [document_summary:docsum_doc_hash]", None, orchestration)
+
+
+def test_citation_reference_rows_are_numbered_and_portable_for_local_sources(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "method.docx"
+    source.write_text("demo", encoding="utf-8")
+    monkeypatch.setattr("app.ui.demo_app.local_file_for_row", lambda row: source if row.get("local_path") else None)
+    orchestration = SimpleNamespace(
+        retrieved_context=SimpleNamespace(
+            as_dict=lambda: {
+                "raw": [{"id": "raw:abc", "chunk_id": "abc", "local_path": str(source), "title": "Method paper"}],
+                "summaries": [],
+                "tables": [],
+                "graph": [],
+                "web": [],
+            }
+        )
+    )
+
+    rows = citation_reference_rows({"orchestration": orchestration})
+
+    assert rows[0]["#"] == "[1]"
+    assert rows[0]["Источник"] == "Method paper"
+    assert "ZIP локальных источников" in rows[0]["Ссылка / файл"]
+
+
+def test_answer_report_sections_do_not_include_raw_local_evidence() -> None:
+    orchestration = SimpleNamespace(
+        retrieved_context=SimpleNamespace(
+            as_dict=lambda: {
+                "raw": [{"id": "raw:1", "preview": "raw fragment"}],
+                "summaries": [],
+                "tables": [],
+                "graph": [],
+            }
+        )
+    )
+
+    sections = answer_report_sections(query="q", answer=SimpleNamespace(text="Summary"), orchestration=orchestration)
+
+    assert "Local RAG evidence" not in {section["title"] for section in sections}
 
 
 def test_comparison_answer_sections_parse_three_user_blocks() -> None:

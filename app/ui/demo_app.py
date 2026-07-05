@@ -7,10 +7,10 @@ import sys
 import time
 import zipfile
 from datetime import datetime
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote
 
 import pandas as pd
 import streamlit as st
@@ -62,11 +62,6 @@ REQUEST_TYPES = {
     "Литературный поиск": ["summary_rag", "raw_rag"],
     "Анализ методик и свойств": ["summary_rag", "raw_rag", "table_search", "graph_search"],
     "Бизнес-аналитика": ["summary_rag", "raw_rag", "table_search", "graph_search"],
-}
-REQUEST_TYPE_DESCRIPTIONS = {
-    "Литературный поиск": "локальная база + внешние научные источники, ранжирование /10, ссылки и отчет",
-    "Анализ методик и свойств": "Raw RAG, Summary RAG, Excel Query и Knowledge Graph для сравнения методик",
-    "Бизнес-аналитика": "R&D evidence + production radar, импортозамещение, рынок и риски",
 }
 ROUTE_LABELS = {
     "raw_rag": "Raw RAG",
@@ -195,6 +190,29 @@ def is_hash_like(value: Any) -> bool:
     return bool(text and HASH_RE.match(text))
 
 
+@lru_cache(maxsize=1)
+def publication_source_lookup() -> dict[str, dict[str, str]]:
+    path = ROOT / "data" / "processed" / "publications" / "publications.jsonl"
+    if not path.exists():
+        return {}
+    lookup: dict[str, dict[str, str]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            item = {
+                "title": compact_text(row.get("title") or row.get("file_name") or row.get("source_path"), 300),
+                "source_path": str(row.get("source_path") or ""),
+                "file_name": str(row.get("file_name") or ""),
+            }
+            for key in (row.get("doc_id"), row.get("publication_id")):
+                if key:
+                    lookup[str(key)] = item
+    return lookup
+
+
 def display_source_title(row: dict[str, Any], lookup: dict[str, str] | None = None) -> str:
     lookup = lookup or {}
     doc_id = str(row.get("doc_id") or "")
@@ -210,6 +228,8 @@ def display_source_title(row: dict[str, Any], lookup: dict[str, str] | None = No
             if stem and not is_hash_like(stem):
                 return compact_text(stem, 300)
         return compact_text(text, 300)
+    if doc_id and publication_source_lookup().get(doc_id, {}).get("title"):
+        return compact_text(publication_source_lookup()[doc_id]["title"], 300)
     for key in ("doc_id", "id"):
         value = row.get(key)
         if value and not is_hash_like(value):
@@ -376,6 +396,27 @@ def method_comparison_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def market_metric_label(row: Any) -> str:
+    metric = getattr(row, "metric", "") or ""
+    commodity = getattr(row, "commodity", "") or ""
+    labels = {
+        "production": "производство",
+        "sales": "продажи",
+        "revenue": "выручка",
+        "capacity": "мощность",
+        "capex": "CAPEX",
+        "opex": "OPEX",
+        "energy": "энергия",
+        "reagents": "реагенты",
+    }
+    metric_label = labels.get(metric, metric)
+    if commodity == "company financials":
+        return metric_label or "финансы"
+    if metric_label and metric_label != "production":
+        return f"{metric_label}: {commodity}"
+    return commodity or metric_label
+
+
 def orchestration_source_rows(orchestration: Any | None) -> list[dict[str, Any]]:
     if orchestration is None:
         return []
@@ -453,10 +494,27 @@ def market_radar_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
     if radar is None:
         return []
     rows = getattr(radar, "production_rows", []) or []
+    detected = getattr(radar, "detected", None)
+    is_water_teo = getattr(detected, "intent", "") == "techno_economic_water_treatment"
+    if is_water_teo:
+        return [
+            {
+                "#": index,
+                "Технология": getattr(row, "company_or_country", ""),
+                "Показатель": getattr(row, "metric", ""),
+                "Значение": getattr(row, "value", ""),
+                "Ед.": getattr(row, "unit", ""),
+                "Cost-драйвер / ограничение": getattr(row, "notes", ""),
+                "Источник": getattr(row, "source_name", ""),
+                "Уверенность": getattr(row, "confidence", ""),
+            }
+            for index, row in enumerate(rows[:40], start=1)
+        ]
     return [
         {
             "#": index,
-            "Показатель": getattr(row, "commodity", ""),
+            "Показатель": market_metric_label(row),
+            "Область": getattr(row, "commodity", ""),
             "Компания / страна": getattr(row, "company_or_country", ""),
             "Период": getattr(row, "period", ""),
             "Значение": getattr(row, "value", ""),
@@ -466,6 +524,12 @@ def market_radar_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for index, row in enumerate(rows[:40], start=1)
     ]
+
+
+def is_techno_economic_radar(record: dict[str, Any]) -> bool:
+    radar = record.get("market_radar")
+    detected = getattr(radar, "detected", None) if radar is not None else None
+    return getattr(detected, "intent", "") == "techno_economic_water_treatment"
 
 
 def market_source_status_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -493,11 +557,11 @@ def market_share_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
         numeric_rows.append({**row, "_value": value})
     totals: dict[tuple[str, str], float] = {}
     for row in numeric_rows:
-        key = (str(row.get("Показатель") or ""), str(row.get("Период") or ""))
+        key = (str(row.get("Показатель") or ""), str(row.get("Период") or ""), str(row.get("Ед.") or ""))
         totals[key] = totals.get(key, 0.0) + float(row["_value"])
     result: list[dict[str, Any]] = []
     for row in numeric_rows:
-        key = (str(row.get("Показатель") or ""), str(row.get("Период") or ""))
+        key = (str(row.get("Показатель") or ""), str(row.get("Период") or ""), str(row.get("Ед.") or ""))
         total = totals.get(key) or 0.0
         if total <= 0:
             continue
@@ -531,6 +595,28 @@ def market_radar_context(record: dict[str, Any], *, max_rows: int = 20) -> str:
     if radar is None:
         return ""
     lines = [getattr(radar, "market_summary", "") or ""]
+    detected = getattr(radar, "detected", None)
+    if getattr(detected, "intent", "") == "techno_economic_water_treatment":
+        for row in (getattr(radar, "production_rows", []) or [])[:max_rows]:
+            lines.append(
+                "- "
+                + "; ".join(
+                    str(value)
+                    for value in (
+                        f"технология={getattr(row, 'company_or_country', '')}",
+                        f"показатель={getattr(row, 'metric', '')}",
+                        f"значение={getattr(row, 'value', '')} {getattr(row, 'unit', '')}",
+                        f"cost_driver={getattr(row, 'notes', '')}",
+                        f"source={getattr(row, 'source_name', '')}",
+                        f"confidence={getattr(row, 'confidence', '')}",
+                    )
+                    if value not in (None, "")
+                )
+            )
+        missing = getattr(radar, "missing_data", []) or []
+        if missing:
+            lines.append("Missing data for calculation: " + "; ".join(str(item) for item in missing[:8]))
+        return "\n".join(line for line in lines if line).strip()
     for row in (getattr(radar, "production_rows", []) or [])[:max_rows]:
         lines.append(
             "- "
@@ -567,6 +653,19 @@ def user_report_extra_sections(record: dict[str, Any]) -> list[dict[str, Any]]:
                 "table": {"headers": headers, "rows": [[str(row.get(header, "")) for header in headers] for row in method_rows[:20]]},
             }
         )
+        reference_rows = citation_reference_rows(record)
+        if reference_rows:
+            reference_headers = list(reference_rows[0].keys())
+            sections.append(
+                {
+                    "title": "Источники к выводам",
+                    "paragraphs": ["Номера источников соответствуют ссылкам вида [1], [2] в summary. Локальные документы лежат в ZIP-архиве под теми же номерами."],
+                    "table": {
+                        "headers": reference_headers,
+                        "rows": [[str(row.get(header, "")) for header in reference_headers] for row in reference_rows],
+                    },
+                }
+            )
     if record.get("request_type") != "Бизнес-аналитика":
         return sections
 
@@ -626,7 +725,8 @@ def method_comparison_summary_text(record: dict[str, Any]) -> str:
     rows = comparison.as_dict().get("rows") if hasattr(comparison, "as_dict") else getattr(comparison, "rows", [])
     if not rows:
         return ""
-    lines = ["## Сравнение лучших методик", ""]
+    refs = citation_ref_map(record.get("literature_run"), record.get("orchestration"))
+    lines = ["## Summary по методикам и свойствам", ""]
     for index, row in enumerate(rows[:5], start=1):
         payload = row if isinstance(row, dict) else row.as_dict()
         item = payload.get("item") or f"Методика {index}"
@@ -643,7 +743,10 @@ def method_comparison_summary_text(record: dict[str, Any]) -> str:
             if values:
                 details.append(f"{label}: {', '.join(values)}")
         evidence = evidence_label(payload.get("evidence") or [], limit=3)
-        if evidence:
+        citation_numbers = evidence_reference_numbers(payload.get("evidence") or [], refs, limit=4)
+        if citation_numbers:
+            details.append(f"источники: {', '.join(citation_numbers)}")
+        elif evidence:
             details.append(f"источники: {evidence}")
         if details:
             lines.append(f"{index}. {item}: " + "; ".join(details) + ".")
@@ -952,12 +1055,13 @@ def build_orchestration_local_sources_archive(orchestration: Any | None, output_
         return None
     context = orchestration.retrieved_context.as_dict()
     title_lookup = orchestration_title_lookup(orchestration)
+    refs = citation_ref_map(None, orchestration)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    files: list[tuple[Path, str]] = []
+    files: list[tuple[Path, str, str, str]] = []
     seen_paths: set[Path] = set()
     used_names: set[str] = set()
     for section in ("raw", "summaries", "tables"):
-        for row in context.get(section) or []:
+        for index, row in enumerate(context.get(section) or [], start=1):
             found = local_file_for_row(row)
             if found is None:
                 continue
@@ -966,19 +1070,20 @@ def build_orchestration_local_sources_archive(orchestration: Any | None, output_
                 continue
             seen_paths.add(resolved)
             title = display_source_title(row, title_lookup)
+            citation_number = citation_number_for_row(section, row, index, refs) or str(len(files) + 1)
             slug = safe_report_id(title, prefix="source").split("_")[0][:70].strip("_") or found.stem
-            arcname = f"{len(files) + 1:02d}_{slug}{found.suffix}"
+            arcname = f"{int(citation_number):02d}_{slug}{found.suffix}" if citation_number.isdigit() else f"{len(files) + 1:02d}_{slug}{found.suffix}"
             while arcname.casefold() in used_names:
                 arcname = f"{len(files) + 1:02d}_{slug}_{len(used_names) + 1}{found.suffix}"
             used_names.add(arcname.casefold())
-            files.append((found, arcname))
+            files.append((found, arcname, citation_number, title))
     if not files:
         return None
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        toc_lines = ["rank;title;file_name"]
-        for index, (path, arcname) in enumerate(files, start=1):
+        toc_lines = ["citation;title;file_name"]
+        for path, arcname, citation_number, title in files:
             archive.write(path, arcname=arcname)
-            toc_lines.append(f"{index};{path.stem.replace(';', ',')};{arcname}")
+            toc_lines.append(f"[{citation_number}];{title.replace(';', ',')};{arcname}")
         archive.writestr("README.csv", "\n".join(toc_lines) + "\n")
     return output_path
 
@@ -1020,8 +1125,34 @@ def citation_ref_map(run: Any | None, orchestration: Any | None = None) -> dict[
         if not key or not href:
             return
         normalized = str(key).casefold()
-        refs[normalized] = {"href": href, "label": compact_text(label or "Открыть источник", 120)}
+        if normalized not in refs:
+            refs[normalized] = {"href": href, "label": compact_text(label or "Открыть источник", 120)}
         mapping[normalized] = href
+
+    def add_key_aliases(section: str, row: dict[str, Any], href: str, label: str) -> None:
+        values = [
+            row.get("id"),
+            row.get("chunk_id"),
+            row.get("summary_id"),
+            row.get("document_summary_id"),
+            row.get("procedure_summary_id"),
+            row.get("doc_id"),
+            row.get("publication_id"),
+        ]
+        for value in values:
+            if not value:
+                continue
+            text = str(value)
+            add_ref(text, href, label)
+            add_ref(f"{section}:{text}", href, label)
+            tail = text.split(":")[-1]
+            add_ref(f"{section}:{tail}", href, label)
+            if section == "raw":
+                add_ref(f"raw:{tail}", href, label)
+            if section == "summaries":
+                add_ref(f"summaries:{tail}", href, label)
+                add_ref(f"document_summary:{tail}", href, label)
+                add_ref(f"procedure_summary:{tail}", href, label)
 
     if run is not None:
         for index, result in enumerate(getattr(run, "results", []) or [], start=1):
@@ -1063,29 +1194,110 @@ def citation_ref_map(run: Any | None, orchestration: Any | None = None) -> dict[
                         label = doc_links[str(row.get("doc_id"))][1]
                     add_ref(citation, link, label)
                     add_ref(f"{section}:{index}", link, label)
-                    chunk_id = row.get("chunk_id") or ""
-                    if chunk_id:
-                        add_ref(f"raw:{chunk_id}", link, label)
-                    summary_id = row.get("summary_id") or row.get("document_summary_id") or ""
-                    if summary_id:
-                        add_ref(f"summaries:{summary_id}", link, label)
+                    add_key_aliases(section, row, link, label)
+    number_by_href: dict[str, int] = {}
+    next_number = 1
+    for ref in refs.values():
+        href = ref.get("href", "")
+        identity = href or ref.get("label", "")
+        if identity not in number_by_href:
+            number_by_href[identity] = next_number
+            next_number += 1
+        ref["number"] = str(number_by_href[identity])
     return refs
+
+
+def citation_number_for_row(section: str, row: dict[str, Any], index: int, refs: dict[str, dict[str, str]]) -> str:
+    keys = [
+        row.get("id"),
+        f"{section}:{index}",
+        row.get("chunk_id"),
+        row.get("summary_id"),
+        row.get("document_summary_id"),
+        row.get("procedure_summary_id"),
+        row.get("doc_id"),
+        row.get("publication_id"),
+    ]
+    for key in keys:
+        if not key:
+            continue
+        text = str(key).casefold()
+        candidates = [text, f"{section}:{text}", text.split(":")[-1], f"{section}:{text.split(':')[-1]}"]
+        if section == "raw":
+            candidates.append(f"raw:{text.split(':')[-1]}")
+        for candidate in candidates:
+            ref = refs.get(candidate)
+            if ref and ref.get("number"):
+                return ref["number"]
+    return ""
+
+
+def evidence_reference_numbers(evidence: list[dict[str, Any]], refs: dict[str, dict[str, str]], *, limit: int = 4) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in evidence[:limit]:
+        citation = str(item.get("citation") or "")
+        if not citation:
+            continue
+        candidates = [citation.casefold(), citation.split(":")[-1].casefold()]
+        number = ""
+        for candidate in candidates:
+            ref = refs.get(candidate)
+            if ref and ref.get("number"):
+                number = ref["number"]
+                break
+        label = f"[{number}]" if number else f"[{citation}]"
+        if label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return labels
+
+
+def citation_reference_rows(record: dict[str, Any]) -> list[dict[str, str]]:
+    refs = citation_ref_map(record.get("literature_run"), record.get("orchestration"))
+    unique: dict[str, dict[str, str]] = {}
+    for ref in refs.values():
+        number = ref.get("number")
+        if number and number not in unique:
+            unique[number] = ref
+    rows: list[dict[str, str]] = []
+    for number in sorted(unique, key=lambda value: int(value) if value.isdigit() else 9999):
+        ref = unique[number]
+        href = ref.get("href", "")
+        rows.append(
+            {
+                "#": f"[{number}]",
+                "Источник": ref.get("label", "Источник"),
+                "Ссылка / файл": href if href.startswith(("http://", "https://")) else f"см. ZIP локальных источников: {int(number):02d}_...",
+            }
+        )
+    return rows[:40]
 
 
 def linkify_citations(text: str, run: Any | None, orchestration: Any | None = None) -> str:
     refs = citation_ref_map(run, orchestration)
+    refs_by_number: dict[str, dict[str, str]] = {}
+    for ref in refs.values():
+        number = ref.get("number")
+        if number and number not in refs_by_number:
+            refs_by_number[number] = ref
     safe = escape(compact_text(text, 3000))
 
     def replace(match: re.Match[str]) -> str:
-        key = match.group(1).casefold()
-        ref = refs.get(key)
+        raw_key = match.group(1)
+        key = raw_key.casefold()
+        ref = refs_by_number.get(raw_key) if raw_key.isdigit() else refs.get(key)
         if not ref:
             return match.group(0)
         href = ref["href"]
         label = ref["label"]
-        return f'<a href="{escape(href, quote=True)}" target="_blank">{escape(label)}</a>'
+        number = ref.get("number") or "?"
+        return (
+            f'<a href="{escape(href, quote=True)}" target="_blank" '
+            f'title="{escape(label, quote=True)}">[{escape(number)}]</a>'
+        )
 
-    return re.sub(r"\[([A-Za-z_][A-Za-z0-9_:-]+)\]", replace, safe, flags=re.I)
+    return re.sub(r"\[([A-Za-z_][A-Za-z0-9_:-]+|\d+)\]", replace, safe, flags=re.I)
 
 
 def render_report_body(text: str, run: Any | None, orchestration: Any | None = None) -> None:
@@ -1117,6 +1329,17 @@ def local_file_for_row(row: dict[str, Any]) -> Path | None:
         found = find_local_file(str(value), project_root=ROOT)
         if found:
             return found
+    for key in ("doc_id", "publication_id"):
+        value = row.get(key)
+        if not value:
+            continue
+        metadata = publication_source_lookup().get(str(value)) or {}
+        for candidate in (metadata.get("source_path"), metadata.get("file_name")):
+            if not candidate:
+                continue
+            found = find_local_file(candidate, project_root=ROOT)
+            if found:
+                return found
     return None
 
 
@@ -1382,15 +1605,7 @@ def render_reports(record: dict[str, Any]) -> None:
     )
     if local_archive is not None:
         render_soft_heading("Архив исходных документов")
-        render_download(local_archive, "ZIP: локальные статьи и таблицы", "application/zip")
-    render_soft_heading("Локальный отчет по evidence")
-    output_dir = orchestration_output_dir(record)
-    full_exports = build_orchestration_exports(orchestration, "full", output_dir / "section_reports", answer=answer, query=query)
-    cols = st.columns(2)
-    with cols[0]:
-        render_download(full_exports.get("pdf"), "PDF: evidence отчет", "application/pdf")
-    with cols[1]:
-        render_download(full_exports.get("docx"), "DOCX: evidence отчет", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        render_download(local_archive, "ZIP: локальные статьи и таблицы ([1], [2], ...)", "application/zip")
 
 
 def render_answer_section_exports(record: dict[str, Any]) -> None:
@@ -1585,11 +1800,11 @@ def render_result(record: dict[str, Any]) -> None:
         render_soft_heading(comparison_title)
         render_table(method_comparison_rows(record), empty_text="Методики/экономические варианты не найдены.")
         if request_type == "Бизнес-аналитика":
-            render_soft_heading("Рыночные и производственные показатели")
+            render_soft_heading("Технико-экономические показатели" if is_techno_economic_radar(record) else "Рыночные и производственные показатели")
             render_table(market_radar_rows(record), empty_text="Рыночные показатели по запросу не найдены в доступном cache/fixture.")
             radar = record.get("market_radar")
             if radar is not None and getattr(radar, "market_summary", ""):
-                render_soft_heading("Краткий вывод Market Radar")
+                render_soft_heading("Краткий вывод Techno-economic Radar" if is_techno_economic_radar(record) else "Краткий вывод Market Radar")
                 render_soft_text(getattr(radar, "market_summary", ""))
             elif not should_run_market_radar(record.get("query", "")):
                 st.caption(
@@ -1641,15 +1856,25 @@ def render_result(record: dict[str, Any]) -> None:
         if request_type == "Бизнес-аналитика":
             market_rows = table_df(market_radar_rows(record))
             if not market_rows.empty:
-                render_soft_heading("Производственные / рыночные показатели")
-                chart_rows = market_rows[["Компания / страна", "Показатель", "Значение"]].copy()
-                chart_rows["Значение"] = pd.to_numeric(chart_rows["Значение"], errors="coerce")
-                chart_rows = chart_rows.dropna(subset=["Значение"])
-                if not chart_rows.empty:
-                    chart_rows["Серия"] = chart_rows["Компания / страна"] + " / " + chart_rows["Показатель"]
-                    render_horizontal_bar_chart(chart_rows, label_col="Серия", value_col="Значение", empty_text="Нет рыночных данных для графика.", height=360)
+                if is_techno_economic_radar(record):
+                    render_soft_heading("Технико-экономические диапазоны")
+                    chart_rows = market_rows[["Технология", "Показатель", "Значение"]].copy()
+                    chart_rows["Значение"] = chart_rows["Значение"].astype(str).str.extract(r"(\d+(?:[.,]\d+)?)", expand=False)
+                    chart_rows["Значение"] = pd.to_numeric(chart_rows["Значение"].str.replace(",", ".", regex=False), errors="coerce")
+                    chart_rows = chart_rows.dropna(subset=["Значение"])
+                    if not chart_rows.empty:
+                        chart_rows["Серия"] = chart_rows["Технология"] + " / " + chart_rows["Показатель"]
+                        render_horizontal_bar_chart(chart_rows, label_col="Серия", value_col="Значение", empty_text="Нет численных технико-экономических диапазонов.", height=360)
+                else:
+                    render_soft_heading("Производственные / рыночные показатели")
+                    chart_rows = market_rows[["Компания / страна", "Показатель", "Значение"]].copy()
+                    chart_rows["Значение"] = pd.to_numeric(chart_rows["Значение"], errors="coerce")
+                    chart_rows = chart_rows.dropna(subset=["Значение"])
+                    if not chart_rows.empty:
+                        chart_rows["Серия"] = chart_rows["Компания / страна"] + " / " + chart_rows["Показатель"]
+                        render_horizontal_bar_chart(chart_rows, label_col="Серия", value_col="Значение", empty_text="Нет рыночных данных для графика.", height=360)
             share_rows = table_df(market_share_rows(record))
-            if not share_rows.empty:
+            if not is_techno_economic_radar(record) and not share_rows.empty:
                 render_soft_heading("Доли компаний / стран в найденной выборке")
                 share_chart = share_rows.copy()
                 share_chart["Серия"] = (
@@ -1819,9 +2044,6 @@ def render_app_header() -> None:
 
 
 def render_request_type_selector() -> str:
-    selected_from_url = unquote(str(st.query_params.get("request_type", "")))
-    if selected_from_url in REQUEST_TYPES:
-        st.session_state["request_type"] = selected_from_url
     st.session_state.setdefault("request_type", next(iter(REQUEST_TYPES)))
     request_type = st.session_state["request_type"]
     st.markdown(
@@ -1836,20 +2058,16 @@ def render_request_type_selector() -> str:
     card_cols = st.columns(3)
     for col, title in zip(card_cols, REQUEST_TYPES):
         is_active = title == request_type
-        class_name = "request-type-card-link request-type-card-active" if is_active else "request-type-card-link"
-        routes = " · ".join(ROUTE_LABELS.get(route, route) for route in REQUEST_TYPES[title])
-        href = f"?request_type={quote(title)}"
         with col:
-            st.markdown(
-                f"""
-                <a class="{class_name}" href="{href}" target="_self">
-                    <div class="request-type-card-title">{escape(title)}</div>
-                    <div class="request-type-card-body">{escape(REQUEST_TYPE_DESCRIPTIONS[title])}</div>
-                    <div class="request-type-card-routes">{escape(routes)}</div>
-                </a>
-                """,
-                unsafe_allow_html=True,
+            clicked = st.button(
+                title,
+                key=f"request_type_card_{safe_report_id(title, prefix='mode')}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
             )
+            if clicked and not is_active:
+                st.session_state["request_type"] = title
+                st.rerun()
     return request_type
 
 
@@ -1891,44 +2109,14 @@ def main() -> None:
             font-weight: 680;
             margin-top: 0.15rem;
         }
-        .request-type-card-link {
-            display: block;
-            min-height: 7.1rem;
-            padding: 0.82rem 0.92rem;
-            border: 1px solid rgba(101, 122, 148, 0.45);
-            border-radius: 12px;
-            background: rgba(24, 31, 45, 0.56);
-            margin-top: 0.4rem;
-            text-decoration: none;
-            transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+        div[data-testid="stButton"] > button {
+            white-space: normal;
+            min-height: 3.25rem;
         }
-        .request-type-card-link:hover {
-            border-color: rgba(80, 199, 255, 0.75);
-            background: rgba(31, 43, 63, 0.78);
-            transform: translateY(-1px);
-            text-decoration: none;
-        }
-        .request-type-card-active {
-            border-color: rgba(255, 82, 96, 0.92);
-            box-shadow: 0 0 0 1px rgba(255, 82, 96, 0.35), 0 10px 30px rgba(0, 0, 0, 0.16);
-            background: rgba(52, 39, 50, 0.72);
-        }
-        .request-type-card-title {
-            color: #ffffff;
-            font-size: 1rem;
-            font-weight: 740;
-            margin-bottom: 0.35rem;
-        }
-        .request-type-card-body {
-            color: #cbd5e3;
-            font-size: 0.9rem;
-            line-height: 1.42;
-        }
-        .request-type-card-routes {
-            color: #8ed9ff;
-            font-size: 0.78rem;
-            font-weight: 650;
-            margin-top: 0.55rem;
+        div[data-testid="stButton"] > button p {
+            text-align: center;
+            line-height: 1.25;
+            margin: 0;
         }
         .literature-section-title {
             font-size: 0.98rem;

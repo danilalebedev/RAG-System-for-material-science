@@ -21,6 +21,7 @@ COMMODITY_ALIASES: dict[Commodity, tuple[str, ...]] = {
     "iron ore": ("iron ore", "железная руда", "железной руды", "руда железа"),
     "cobalt": ("cobalt", "co", "кобальт", "кобальта"),
     "lithium": ("lithium", "li", "литий", "лития"),
+    "company financials": ("выручка", "продажи", "revenue", "sales", "финансы", "financials"),
 }
 
 COMPANY_ALIASES: dict[str, tuple[str, ...]] = {
@@ -49,6 +50,60 @@ INTERNAL_TERMS_BY_COMMODITY: dict[Commodity, tuple[str, ...]] = {
     "platinum": ("PGM", "платиноиды", "платиновые концентраты"),
 }
 
+WATER_TREATMENT_TERMS = (
+    "подготовка воды",
+    "подготовк",
+    "водоподготовка",
+    "обессоливание",
+    "очистка воды",
+    "шахтные воды",
+    "скважин",
+    "сухой остаток",
+    "сульфат",
+    "хлорид",
+    "кальци",
+    "магни",
+    "натри",
+    "water treatment",
+    "water preparation",
+    "desalination",
+    "mine water",
+    "groundwater",
+    "tds",
+    "sulfate",
+    "chloride",
+)
+TECHNO_ECONOMIC_TERMS = (
+    "технико-эконом",
+    "капекс",
+    "capex",
+    "опекс",
+    "opex",
+    "tco",
+    "стоимость",
+    "затраты",
+    "энергопотреб",
+    "энергозатрат",
+    "реагент",
+    "производительность",
+    "вариант",
+    "сравнение",
+    "cost",
+    "energy",
+    "reagent",
+    "throughput",
+)
+FINANCIAL_TERMS = (
+    "выруч",
+    "продаж",
+    "реализац",
+    "оборот",
+    "revenue",
+    "sales",
+    "financial",
+    "market size",
+)
+
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
@@ -69,6 +124,10 @@ def _contains_alias(text: str, aliases: Iterable[str]) -> bool:
 def detect_market_query(query: str) -> MarketQuery:
     folded = query.lower()
     commodities = [commodity for commodity, aliases in COMMODITY_ALIASES.items() if _contains_alias(folded, aliases)]
+    if any(term in folded for term in WATER_TREATMENT_TERMS) and "water treatment" not in commodities:
+        commodities.append("water treatment")
+    if any(term in folded for term in FINANCIAL_TERMS) and "company financials" not in commodities:
+        commodities.append("company financials")
     companies = [company for company, aliases in COMPANY_ALIASES.items() if _contains_alias(folded, aliases)]
     countries = [country for country, aliases in COUNTRY_ALIASES.items() if _contains_alias(folded, aliases)]
     periods = sorted(set(YEAR_RE.findall(query)))
@@ -80,7 +139,11 @@ def detect_market_query(query: str) -> MarketQuery:
     if not commodities and any(token in folded for token in ("pgm", "платиноид")):
         commodities = ["palladium", "platinum"]
 
-    if any(token in folded for token in ("динамик", "time series", "по годам", "trend")):
+    if "water treatment" in commodities and any(token in folded for token in TECHNO_ECONOMIC_TERMS):
+        intent = "techno_economic_water_treatment"
+    elif "company financials" in commodities and (companies or any(token in folded for token in FINANCIAL_TERMS)):
+        intent = "company_financials"
+    elif any(token in folded for token in ("динамик", "time series", "по годам", "trend")):
         intent = "time_series"
     elif any(token in folded for token in ("сравн", "compare", "топ", "ranking", "роль")):
         intent = "market_comparison"
@@ -105,7 +168,9 @@ def detect_market_query(query: str) -> MarketQuery:
 
 def _row_matches(row: MarketDataRow, detected: MarketQuery) -> bool:
     if detected.commodities and row.commodity not in detected.commodities:
-        return False
+        requested_business_only = detected.commodities == ["company financials"]
+        if not (requested_business_only and row.metric in {"revenue", "sales"}):
+            return False
     if detected.periods and row.period not in detected.periods:
         return False
     if detected.companies and row.company_or_country not in detected.companies:
@@ -140,12 +205,31 @@ def _rank_rows(rows: Iterable[MarketDataRow]) -> list[MarketDataRow]:
     )
 
 
+def _row_label(row: MarketDataRow) -> str:
+    labels = {
+        "production": "производство",
+        "sales": "продажи",
+        "revenue": "выручка",
+        "capacity": "мощность",
+        "capex": "CAPEX",
+        "opex": "OPEX",
+        "energy": "энергия",
+        "reagents": "реагенты",
+    }
+    metric = labels.get(row.metric, row.metric)
+    if row.commodity == "company financials":
+        return metric
+    return f"{metric}: {row.commodity}"
+
+
 def _build_charts(rows: list[MarketDataRow]) -> dict[str, list[dict[str, object]]]:
     time_series = [
         {
             "period": row.period,
             "entity": row.company_or_country,
             "commodity": row.commodity,
+            "metric": row.metric,
+            "label": _row_label(row),
             "value": row.value,
             "unit": row.unit,
         }
@@ -156,6 +240,8 @@ def _build_charts(rows: list[MarketDataRow]) -> dict[str, list[dict[str, object]
         {
             "entity": row.company_or_country,
             "commodity": row.commodity,
+            "metric": row.metric,
+            "label": _row_label(row),
             "period": row.period,
             "value": row.value,
             "unit": row.unit,
@@ -169,18 +255,41 @@ def _summary(rows: list[MarketDataRow], detected: MarketQuery) -> str:
     if not rows:
         return "Данных по запросу в доступных источниках Market Radar не найдено. Проверьте выбранные компании, страны или период."
 
+    if detected.intent == "techno_economic_water_treatment":
+        technologies = sorted({row.company_or_country for row in rows})
+        metrics = sorted({row.metric for row in rows})
+        return (
+            "Techno-economic radar собрал demo-диапазоны и cost-драйверы по водоподготовке: "
+            + ", ".join(technologies[:8])
+            + ". Покрытые показатели: "
+            + ", ".join(metrics[:8])
+            + ". Это не смета CAPEX/OPEX, а shortlist для сравнения и постановки расчета."
+        )
+
     latest = latest_rows(rows) if detected.latest_requested or detected.intent != "time_series" else rows
     grouped: dict[str, list[str]] = defaultdict(list)
     for row in latest:
-        grouped[row.company_or_country].append(f"{row.commodity}: {row.value} {row.unit} ({row.period})")
+        grouped[row.company_or_country].append(f"{_row_label(row)}: {row.value} {row.unit} ({row.period})")
 
     parts = [f"{entity}: " + "; ".join(values) for entity, values in grouped.items()]
-    prefix = "Market Radar собрал проверяемые производственные показатели без LLM-синтеза чисел."
+    prefix = "Market Radar собрал проверяемые производственные, рыночные и финансовые показатели без LLM-синтеза чисел."
     return prefix + " " + " | ".join(parts[:8])
 
 
 def _missing_data(rows: list[MarketDataRow], detected: MarketQuery, statuses: list[SourceStatus]) -> list[str]:
     missing: list[str] = []
+    if detected.intent == "techno_economic_water_treatment":
+        if rows:
+            missing.extend(
+                [
+                    "Нет проектной производительности обогатительной фабрики, м3/ч.",
+                    "Нет лабораторной ионной матрицы исходной воды по сезонам.",
+                    "Нет требований по концентрату/рассолу: сброс, возврат, ZLD или утилизация.",
+                    "Нет локальных цен на электроэнергию, реагенты, мембраны и утилизацию осадка/рассола.",
+                ]
+            )
+            return missing
+        missing.append("Нет demo-строк по технико-экономике водоподготовки.")
     if not rows:
         missing.append("Нет строк, совпавших с выбранными commodity/company/country/period фильтрами.")
     available_keys = {(row.company_or_country, row.commodity) for row in rows}
@@ -196,6 +305,12 @@ def _missing_data(rows: list[MarketDataRow], detected: MarketQuery, statuses: li
 
 def _suggested_sources(detected: MarketQuery, rows: list[MarketDataRow]) -> list[str]:
     suggestions: list[str] = []
+    if detected.intent == "techno_economic_water_treatment":
+        return [
+            "Добавить коммерческие предложения/опросные листы по RO/NF/EDR/IX для конкретной производительности.",
+            "Добавить результаты jar-test/пилотных испытаний по scaling/fouling для воды скважины 120.",
+            "Добавить локальные тарифы и регламент обращения с концентратом/осадком.",
+        ]
     if detected.companies and not rows:
         suggestions.append("Добавить последний quarterly/annual production report компании.")
     if detected.countries:
