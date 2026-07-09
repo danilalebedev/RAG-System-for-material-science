@@ -35,6 +35,25 @@ AI-powered search system для материаловедения, металлу
 - **LLM layer**: формирует ответы, сравнительные выводы и отчеты на русском языке.
 - **Streamlit GUI**: пользовательский интерфейс для запуска сценариев и выгрузки результатов.
 
+## Технические характеристики
+
+- **Embedding-модель основного профиля**: `baai/bge-m3` через RouterAI, единое 1024-мерное embedding-пространство для RAW chunks, document summaries и procedure summaries.
+- **Дополнительный embedding-профиль**: Yandex AI Studio `text-search-doc/latest` / `text-search-query/latest`, 256 измерений, использовался как Yandex-first контур и fallback-совместимый индекс.
+- **Inference-модель для ответов в демо**: RouterAI `deepseek/deepseek-chat-v3.1`; для extraction pipeline был настроен YandexGPT `yandexgpt-5.1/latest` с fallback на `yandexgpt-lite/latest`.
+- **Объем базы знаний**: 1862 документа, 89 703 текстовых chunk, 5507 извлеченных таблиц, 1862 full-text файла, 4190 CSV-артефактов из Excel.
+- **Индексы**: RAW vector + RAW lexical, document summary vector, procedure summary vector, summary lexical; основной RouterAI BGE-M3 индекс содержит 89 703 RAW-вектора, 1862 document-summary вектора и 879 procedure-summary векторов.
+- **Размер локальных артефактов**: около 12.3 GB в `data/`, включая raw-корпус, parsed/processed данные и индексы; сами индексы занимают около 4.3 GB.
+- **Модальности**: PDF, DOCX, PPTX, XLSX/XLS, CSV, таблицы, full-text, metadata, summary, procedure summaries, web-publication metadata.
+- **Работа с модальностями**: документы парсятся в текстовые chunk, таблицы и Excel-листы сохраняются как отдельные structured artifacts, summary используются для отдельного Summary RAG, а связи между материалами/процессами/свойствами выносятся в knowledge graph.
+
+## Агентный инжиниринг
+
+- Разработка велась через набор специализированных агентных задач: парсинг корпуса, извлечение summary, построение индексов, graph enrichment, RAG-интеграция, GUI и отчетность.
+- Для долгих фоновых процессов использовались watcher-агенты: они проверяли доступность API, запускали векторизацию, писали статус в логи и не блокировали основную разработку.
+- Для качества применялись отдельные роли/циклы: bugfix-loop, test-generation, code-review и acceptance-прогоны по реальным пользовательским сценариям.
+- `tasks/` использовался как контракт между агентами: в каждой задаче фиксировались зона файлов, ограничения, команды запуска и критерии готовности.
+- Такой подход позволил параллельно развивать RAG, web search, граф, бизнес-сценарий и Streamlit GUI без остановки длительного парсинга/индексации.
+
 ## Основные сценарии
 
 1. **Литературный поиск**  
